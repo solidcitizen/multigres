@@ -25,14 +25,22 @@
 
 # ─── Tenant Extraction ──────────────────────────────────────
 
-# Character separating the role from the tenant ID in the username.
+# Character separating the role from the tenant payload in the username.
 # With separator '.', username 'app_user.acme' yields:
 #   role = 'app_user', tenant = 'acme'
 # tenant_separator = .
 
-# Postgres session variable set for each tenant connection.
-# Your RLS policies should reference this via current_setting().
-# context_variable = app.current_tenant_id
+# Postgres session variable(s) set for each tenant connection.
+# Your RLS policies should reference these via current_setting().
+# Comma-separated for multiple variables.
+# context_variables = app.current_tenant_id
+
+# Separator for multiple values in the tenant payload.
+# With context_variables = app.current_list_id,app.current_user_id
+# and value_separator = :, username 'app_user.list123:user456' yields:
+#   app.current_list_id = 'list123'
+#   app.current_user_id = 'user456'
+# value_separator = :
 
 # ─── Access Control ─────────────────────────────────────────
 

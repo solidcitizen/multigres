@@ -199,7 +199,7 @@ const pool = new Pool({
 });
 ```
 
-Multigres injects both:
+Multigres injects all context variables plus the role switch:
 
 ```sql
 SET app.current_list_id = '<list_id>';
