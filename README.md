@@ -45,14 +45,15 @@ Every subsequent query is scoped by RLS. The ORM never knows.
 
 ## Quick Start
 
-### 1. Install
+### 1. Build
 
 ```bash
-git clone https://github.com/your-org/multigres.git
+git clone https://github.com/solidcitizen/multigres.git
 cd multigres
-npm install
-npm run build
+cargo build --release
 ```
+
+The binary is at `target/release/multigres`.
 
 ### 2. Set up Postgres
 
@@ -81,11 +82,11 @@ SELECT * FROM multigres_status();
 
 ```bash
 # Point at your Postgres instance
-npx multigres --upstream-port 5432
+./target/release/multigres --upstream-port 5432
 
 # Or with a config file
 cp multigres.conf.example multigres.conf
-npx multigres --config multigres.conf
+./target/release/multigres --config multigres.conf
 ```
 
 ### 5. Connect through Multigres
@@ -141,6 +142,8 @@ superuser_bypass = postgres
 | `value_separator` | `:` | `MULTIGRES_VALUE_SEPARATOR` | Separator for multiple values |
 | `superuser_bypass` | `postgres` | `MULTIGRES_SUPERUSER_BYPASS` | Bypass usernames (comma-separated) |
 | `log_level` | `info` | `MULTIGRES_LOG_LEVEL` | debug/info/warn/error |
+
+Configuration is loaded in priority order: defaults → config file → environment variables → CLI flags.
 
 ### Multiple Context Variables
 
@@ -198,41 +201,23 @@ migration from connection pinning, and troubleshooting.
 
 ## Architecture
 
-Multigres is a **zero-dependency** Node.js TCP proxy that implements the
-minimum subset of the Postgres wire protocol needed for:
+Multigres is written in **Rust** using [tokio](https://tokio.rs/) for async
+I/O. It implements the minimum subset of the Postgres v3 wire protocol needed
+for:
 
 - Parsing `StartupMessage` to extract the tenant-encoded username
 - Rewriting the username before forwarding to upstream Postgres
-- Detecting `AuthenticationOk` to know when auth is complete
+- Relaying SCRAM-SHA-256 (and other) authentication exchanges
 - Injecting `SET` commands after authentication
-- Transparent bidirectional piping for all subsequent traffic
+- Zero-copy bidirectional piping for all subsequent traffic
 
 After the initial handshake (~3 messages), Multigres adds **zero overhead** —
-it's a direct TCP pipe.
+it's a direct TCP pipe via `tokio::io::copy_bidirectional`.
+
+Single static binary. No runtime dependencies.
 
 See **[docs/architecture.md](docs/architecture.md)** for the full
 architecture deep-dive.
-
-## Implementation Language
-
-v0.1 is written in **TypeScript (Node.js)** — the right choice for proving
-the concept and iterating quickly. The wire protocol parser is ~300 lines and
-the connection state machine is ~350. In transparent mode, Node.js delegates
-to OS-level socket piping with minimal overhead.
-
-That said, a proxy in the data path between your application and database
-should ultimately be written in a systems language. The roadmap includes a
-**Rust rewrite** for production use, which would provide:
-
-- Lower per-connection latency
-- Smaller memory footprint at scale
-- No garbage collection pauses
-- Single binary distribution (no runtime dependency)
-
-The TypeScript implementation is a prototype that validated the architecture.
-The Rust version will be designed from the ground up for production
-characteristics: async I/O with tokio, zero-copy proxying, built-in
-connection pooling, and proper backpressure handling.
 
 ## License
 
