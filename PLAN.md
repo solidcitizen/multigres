@@ -169,12 +169,18 @@ admin/migration tools to connect directly.
 - Query timeout per tenant
 - Tenant allow/deny lists
 
+### v0.9 — Rust Rewrite
+- Rewrite proxy in Rust for production-grade performance
+- Single static binary, no runtime dependencies
+- Lower latency, smaller memory footprint, no GC pauses
+- TypeScript v0.1–v0.5 serves as the reference implementation and spec
+
 ### v1.0 — Production Ready
 - Battle-tested with real workloads
 - Comprehensive test suite (unit, integration, chaos)
 - Performance benchmarks vs direct connection
 - Documentation site
-- Published to npm
+- Published to crates.io and as prebuilt binaries
 
 ## Design Principles
 
