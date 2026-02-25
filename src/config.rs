@@ -47,6 +47,34 @@ pub struct Cli {
     /// Log level
     #[arg(long)]
     pub log_level: Option<String>,
+
+    /// TLS listen port (enables TLS termination)
+    #[arg(long)]
+    pub tls_port: Option<u16>,
+
+    /// Path to TLS certificate (PEM)
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// Path to TLS private key (PEM)
+    #[arg(long)]
+    pub tls_key: Option<String>,
+
+    /// Enable TLS to upstream Postgres
+    #[arg(long)]
+    pub upstream_tls: bool,
+
+    /// Verify upstream TLS certificate (default: true)
+    #[arg(long)]
+    pub upstream_tls_verify: Option<bool>,
+
+    /// Path to custom CA certificate for upstream TLS
+    #[arg(long)]
+    pub upstream_tls_ca: Option<String>,
+
+    /// Handshake timeout in seconds
+    #[arg(long)]
+    pub handshake_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +88,13 @@ pub struct Config {
     pub value_separator: String,
     pub superuser_bypass: Vec<String>,
     pub log_level: String,
+    pub tls_port: Option<u16>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub upstream_tls: bool,
+    pub upstream_tls_verify: bool,
+    pub upstream_tls_ca: Option<String>,
+    pub handshake_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -74,6 +109,13 @@ impl Default for Config {
             value_separator: ":".into(),
             superuser_bypass: vec!["postgres".into()],
             log_level: "info".into(),
+            tls_port: None,
+            tls_cert: None,
+            tls_key: None,
+            upstream_tls: false,
+            upstream_tls_verify: true,
+            upstream_tls_ca: None,
+            handshake_timeout_secs: 30,
         }
     }
 }
@@ -123,8 +165,42 @@ impl Config {
         if let Some(v) = cli.log_level {
             config.log_level = v;
         }
+        if let Some(v) = cli.tls_port {
+            config.tls_port = Some(v);
+        }
+        if let Some(v) = cli.tls_cert {
+            config.tls_cert = Some(v);
+        }
+        if let Some(v) = cli.tls_key {
+            config.tls_key = Some(v);
+        }
+        if cli.upstream_tls {
+            config.upstream_tls = true;
+        }
+        if let Some(v) = cli.upstream_tls_verify {
+            config.upstream_tls_verify = v;
+        }
+        if let Some(v) = cli.upstream_tls_ca {
+            config.upstream_tls_ca = Some(v);
+        }
+        if let Some(v) = cli.handshake_timeout {
+            config.handshake_timeout_secs = v;
+        }
 
         config
+    }
+
+    /// Validate configuration. Returns an error message if invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.tls_port.is_some() {
+            if self.tls_cert.is_none() || self.tls_key.is_none() {
+                return Err("tls_port requires both tls_cert and tls_key".into());
+            }
+        }
+        if self.handshake_timeout_secs == 0 {
+            return Err("handshake_timeout must be > 0".into());
+        }
+        Ok(())
     }
 }
 
@@ -173,6 +249,25 @@ fn apply_config_file(config: &mut Config, content: &str) {
                     value.split(',').map(|s| s.trim().to_string()).collect();
             }
             "log_level" => config.log_level = value,
+            "tls_port" => {
+                if let Ok(v) = value.parse() {
+                    config.tls_port = Some(v);
+                }
+            }
+            "tls_cert" => config.tls_cert = Some(value),
+            "tls_key" => config.tls_key = Some(value),
+            "upstream_tls" => {
+                config.upstream_tls = matches!(value.as_str(), "true" | "1" | "yes");
+            }
+            "upstream_tls_verify" => {
+                config.upstream_tls_verify = !matches!(value.as_str(), "false" | "0" | "no");
+            }
+            "upstream_tls_ca" => config.upstream_tls_ca = Some(value),
+            "handshake_timeout" | "handshake_timeout_secs" => {
+                if let Ok(v) = value.parse() {
+                    config.handshake_timeout_secs = v;
+                }
+            }
             _ => {}
         }
     }
@@ -209,5 +304,30 @@ fn apply_env(config: &mut Config) {
     }
     if let Ok(v) = std::env::var("MULTIGRES_LOG_LEVEL") {
         config.log_level = v;
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_TLS_PORT") {
+        if let Ok(p) = v.parse() {
+            config.tls_port = Some(p);
+        }
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_TLS_CERT") {
+        config.tls_cert = Some(v);
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_TLS_KEY") {
+        config.tls_key = Some(v);
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS") {
+        config.upstream_tls = matches!(v.as_str(), "true" | "1" | "yes");
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS_VERIFY") {
+        config.upstream_tls_verify = !matches!(v.as_str(), "false" | "0" | "no");
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS_CA") {
+        config.upstream_tls_ca = Some(v);
+    }
+    if let Ok(v) = std::env::var("MULTIGRES_HANDSHAKE_TIMEOUT") {
+        if let Ok(t) = v.parse() {
+            config.handshake_timeout_secs = t;
+        }
     }
 }

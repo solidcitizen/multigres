@@ -49,6 +49,35 @@
 # Comma-separated. Used for admin, migration, superuser access.
 # superuser_bypass = postgres
 
+# ─── TLS Termination (client → Multigres) ────────────────────
+
+# Port for TLS-encrypted client connections.
+# Requires tls_cert and tls_key. Plain listener stays on `port`.
+# tls_port = 6433
+
+# Path to PEM certificate file
+# tls_cert = /etc/multigres/server.crt
+
+# Path to PEM private key file
+# tls_key = /etc/multigres/server.key
+
+# ─── TLS Origination (Multigres → upstream Postgres) ────────
+
+# Connect to upstream Postgres over TLS
+# upstream_tls = false
+
+# Verify upstream TLS certificate (set to false for self-signed)
+# upstream_tls_verify = true
+
+# Custom CA certificate for upstream verification
+# upstream_tls_ca = /etc/multigres/upstream-ca.crt
+
+# ─── Timeouts ────────────────────────────────────────────────
+
+# Max seconds for startup + auth + injection handshake.
+# Active queries (transparent pipe) are not affected.
+# handshake_timeout = 30
+
 # ─── Logging ─────────────────────────────────────────────────
 
 # Log level: debug, info, warn, error

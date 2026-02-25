@@ -1,41 +1,130 @@
 //! TCP Listener — accepts connections and spawns per-connection tasks.
+//! Supports both plain and TLS listeners.
 
+use rustls::ClientConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::info;
+use tokio_rustls::TlsAcceptor;
+use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::connection;
+use crate::stream::ClientStream;
+use crate::tls;
 
 static CONN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Start the Multigres proxy server.
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = format!("{}:{}", config.listen_host, config.listen_port);
-    let listener = TcpListener::bind(&addr).await?;
+    config.validate().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    // ─── Build TLS state once at startup ────────────────────────────────
+
+    // TLS termination (client → Multigres)
+    let tls_acceptor = match (&config.tls_port, &config.tls_cert, &config.tls_key) {
+        (Some(_), Some(cert), Some(key)) => {
+            let server_config = tls::build_server_config(cert, key)?;
+            Some(TlsAcceptor::from(server_config))
+        }
+        _ => None,
+    };
+
+    // TLS origination (Multigres → upstream)
+    let upstream_tls: Option<Arc<ClientConfig>> = if config.upstream_tls {
+        Some(tls::build_client_config(
+            config.upstream_tls_verify,
+            config.upstream_tls_ca.as_deref(),
+        )?)
+    } else {
+        None
+    };
+
+    // ─── Plain listener (always starts) ─────────────────────────────────
+
+    let plain_addr = format!("{}:{}", config.listen_host, config.listen_port);
+    let plain_listener = TcpListener::bind(&plain_addr).await?;
 
     info!(
-        addr = %addr,
+        addr = %plain_addr,
         upstream = %format!("{}:{}", config.upstream_host, config.upstream_port),
         separator = %config.tenant_separator,
         context_vars = %config.context_variables.join(", "),
-        "multigres listening"
+        "plain listener"
     );
 
     if !config.superuser_bypass.is_empty() {
         info!(bypass = %config.superuser_bypass.join(", "), "superuser bypass");
     }
 
+    if upstream_tls.is_some() {
+        info!(
+            verify = config.upstream_tls_verify,
+            "upstream TLS enabled"
+        );
+    }
+
+    info!(
+        timeout_secs = config.handshake_timeout_secs,
+        "handshake timeout"
+    );
+
     let config = Arc::new(config);
 
+    // ─── TLS listener (if configured) ───────────────────────────────────
+
+    if let (Some(tls_port), Some(acceptor)) = (config.tls_port, tls_acceptor) {
+        let tls_addr = format!("{}:{}", config.listen_host, tls_port);
+        let tls_listener = TcpListener::bind(&tls_addr).await?;
+        info!(addr = %tls_addr, "TLS listener");
+
+        let tls_config = Arc::clone(&config);
+        let tls_upstream = upstream_tls.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match tls_listener.accept().await {
+                    Ok((socket, _)) => {
+                        let config = Arc::clone(&tls_config);
+                        let upstream = tls_upstream.clone();
+                        let acceptor = acceptor.clone();
+                        let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+
+                        tokio::spawn(async move {
+                            // TLS handshake in spawned task — doesn't block accept loop
+                            match acceptor.accept(socket).await {
+                                Ok(tls_stream) => {
+                                    let client = ClientStream::Tls(tls_stream);
+                                    connection::handle_connection(
+                                        client, config, upstream, conn_id,
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    debug!(conn_id, error = %e, "TLS handshake failed");
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!(error = %e, "TLS accept error");
+                    }
+                }
+            }
+        });
+    }
+
+    // ─── Plain accept loop (runs on main task) ──────────────────────────
+
     loop {
-        let (socket, _) = listener.accept().await?;
+        let (socket, _) = plain_listener.accept().await?;
         let config = Arc::clone(&config);
+        let upstream = upstream_tls.clone();
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
         tokio::spawn(async move {
-            connection::handle_connection(socket, config, conn_id).await;
+            let client = ClientStream::Plain(socket);
+            connection::handle_connection(client, config, upstream, conn_id).await;
         });
     }
 }
