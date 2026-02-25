@@ -1,9 +1,9 @@
 -- ============================================================================
--- Multigres: PostgreSQL Setup Script
+-- Pgvpd: PostgreSQL Setup Script
 -- ============================================================================
 --
 -- Run this against your Postgres database to configure the roles, functions,
--- and policies needed for Multigres VPD.
+-- and policies needed for Pgvpd VPD.
 --
 -- Prerequisites:
 --   - Connected as a superuser (postgres)
@@ -16,7 +16,7 @@
 
 -- ─── 1. Create the application role ─────────────────────────────────────────
 --
--- This role is used for all tenant-scoped connections through Multigres.
+-- This role is used for all tenant-scoped connections through Pgvpd.
 -- CRITICAL: NOBYPASSRLS ensures RLS policies are ALWAYS enforced.
 --           NOSUPERUSER ensures the role can never escalate.
 
@@ -67,19 +67,19 @@ END;
 $$;
 
 COMMENT ON FUNCTION current_tenant_id() IS
-  'Multigres: Returns current tenant ID from session. NULL = fail-closed (no rows visible).';
+  'Pgvpd: Returns current tenant ID from session. NULL = fail-closed (no rows visible).';
 
--- ─── 3. Helper: Enable Multigres RLS on a table ────────────────────────────
+-- ─── 3. Helper: Enable Pgvpd RLS on a table ────────────────────────────
 --
 -- Call this for every tenant-scoped table.
 -- It enables RLS, FORCES it (even for table owners), and creates
 -- the standard isolation policy.
 --
 -- Usage:
---   SELECT multigres_protect('contacts', 'tenant_id');
---   SELECT multigres_protect('invoices', 'org_id');
+--   SELECT pgvpd_protect('contacts', 'tenant_id');
+--   SELECT pgvpd_protect('invoices', 'org_id');
 
-CREATE OR REPLACE FUNCTION multigres_protect(
+CREATE OR REPLACE FUNCTION pgvpd_protect(
   target_table TEXT,
   tenant_column TEXT DEFAULT 'tenant_id'
 )
@@ -99,7 +99,7 @@ BEGIN
   EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO app_user', target_table);
 
   -- Create fail-closed isolation policy
-  policy_name := 'multigres_tenant_isolation_' || target_table;
+  policy_name := 'pgvpd_tenant_isolation_' || target_table;
 
   -- Drop existing policy if it exists (idempotent)
   EXECUTE format('DROP POLICY IF EXISTS %I ON %I', policy_name, target_table);
@@ -112,19 +112,19 @@ BEGIN
     tenant_column
   );
 
-  RAISE NOTICE 'Multigres: Protected table "%" on column "%" — RLS enabled, fail-closed policy active',
+  RAISE NOTICE 'Pgvpd: Protected table "%" on column "%" — RLS enabled, fail-closed policy active',
     target_table, tenant_column;
 END;
 $$;
 
-COMMENT ON FUNCTION multigres_protect(TEXT, TEXT) IS
-  'Multigres: Enable RLS + FORCE + fail-closed tenant isolation on a table.';
+COMMENT ON FUNCTION pgvpd_protect(TEXT, TEXT) IS
+  'Pgvpd: Enable RLS + FORCE + fail-closed tenant isolation on a table.';
 
 -- ─── 4. Verification helper ─────────────────────────────────────────────────
 --
--- Lists all tables and their Multigres protection status.
+-- Lists all tables and their Pgvpd protection status.
 
-CREATE OR REPLACE FUNCTION multigres_status()
+CREATE OR REPLACE FUNCTION pgvpd_status()
 RETURNS TABLE (
   table_name TEXT,
   rls_enabled BOOLEAN,
@@ -146,8 +146,8 @@ AS $$
   ORDER BY c.relname;
 $$;
 
-COMMENT ON FUNCTION multigres_status() IS
-  'Multigres: Show RLS protection status for all public tables.';
+COMMENT ON FUNCTION pgvpd_status() IS
+  'Pgvpd: Show RLS protection status for all public tables.';
 
 -- ─── 5. Grant usage on sequences (needed for INSERT with serial/identity) ───
 
@@ -169,22 +169,22 @@ DO $$
 BEGIN
   RAISE NOTICE '';
   RAISE NOTICE '══════════════════════════════════════════════════════════════';
-  RAISE NOTICE '  Multigres setup complete.';
+  RAISE NOTICE '  Pgvpd setup complete.';
   RAISE NOTICE '';
   RAISE NOTICE '  Next steps:';
   RAISE NOTICE '    1. Protect your tables:';
-  RAISE NOTICE '       SELECT multigres_protect(''your_table'', ''tenant_id'');';
+  RAISE NOTICE '       SELECT pgvpd_protect(''your_table'', ''tenant_id'');';
   RAISE NOTICE '';
   RAISE NOTICE '    2. Change the app_user password:';
   RAISE NOTICE '       ALTER ROLE app_user WITH PASSWORD ''your_secure_password'';';
   RAISE NOTICE '';
-  RAISE NOTICE '    3. Start Multigres:';
-  RAISE NOTICE '       multigres --upstream-port 5432';
+  RAISE NOTICE '    3. Start Pgvpd:';
+  RAISE NOTICE '       pgvpd --upstream-port 5432';
   RAISE NOTICE '';
-  RAISE NOTICE '    4. Connect through Multigres:';
+  RAISE NOTICE '    4. Connect through Pgvpd:';
   RAISE NOTICE '       psql -h localhost -p 6432 -U app_user.my_tenant mydb';
   RAISE NOTICE '';
   RAISE NOTICE '    5. Verify isolation:';
-  RAISE NOTICE '       SELECT * FROM multigres_status();';
+  RAISE NOTICE '       SELECT * FROM pgvpd_status();';
   RAISE NOTICE '══════════════════════════════════════════════════════════════';
 END $$;

@@ -1,12 +1,12 @@
-# Using Multigres with Drizzle ORM
+# Using Pgvpd with Drizzle ORM
 
-This guide shows how to integrate Multigres into a Drizzle ORM application
+This guide shows how to integrate Pgvpd into a Drizzle ORM application
 to get transparent, database-enforced tenant isolation with zero application-
 layer security code.
 
 ## What Changes
 
-| Before Multigres | After Multigres |
+| Before Pgvpd | After Pgvpd |
 |---|---|
 | `AsyncLocalStorage` + connection pinning | Not needed |
 | `SET ROLE app_user` in middleware | Not needed |
@@ -14,7 +14,7 @@ layer security code.
 | `res.on('close')` cleanup handlers | Not needed |
 | Proxy wrapper on `db` export | Not needed |
 | `WHERE tenant_id = ?` in queries | Not needed (RLS handles it) |
-| Connection string points at Postgres | Connection string points at Multigres |
+| Connection string points at Postgres | Connection string points at Pgvpd |
 | Username: `app_user` | Username: `app_user.tenant_id` |
 
 The only change is the connection string. Everything else disappears.
@@ -38,10 +38,10 @@ export const contacts = pgTable("contacts", {
 });
 ```
 
-Run `multigres_protect` on each tenant-scoped table:
+Run `pgvpd_protect` on each tenant-scoped table:
 
 ```sql
-SELECT multigres_protect('contacts', 'tenant_id');
+SELECT pgvpd_protect('contacts', 'tenant_id');
 ```
 
 You never write `WHERE tenant_id = ?` in application code. The RLS policy
@@ -54,7 +54,7 @@ const allContacts = await db.select().from(contacts);
 
 ### 2. Database connection
 
-Point your pool at Multigres instead of Postgres directly. Encode the tenant
+Point your pool at Pgvpd instead of Postgres directly. Encode the tenant
 ID in the username:
 
 ```typescript
@@ -66,7 +66,7 @@ import * as schema from "./schema";
 export function createTenantDb(tenantId: string) {
   const pool = new Pool({
     host: "localhost",
-    port: 6432,                          // Multigres port
+    port: 6432,                          // Pgvpd port
     user: `app_user.${tenantId}`,        // tenant encoded in username
     password: "app_user_password",
     database: "mydb",
@@ -77,7 +77,7 @@ export function createTenantDb(tenantId: string) {
 ```
 
 That's it. No `AsyncLocalStorage`. No `Proxy`. No connection pinning. No
-cleanup middleware. The pool connects through Multigres, which sets the tenant
+cleanup middleware. The pool connects through Pgvpd, which sets the tenant
 context on every connection. RLS does the rest.
 
 ## Express Integration
@@ -181,7 +181,7 @@ Some applications need more than one dimension of identity. For example, an
 app that scopes data by both list/workspace AND user:
 
 ```
-# multigres.conf
+# pgvpd.conf
 context_variables = app.current_list_id,app.current_user_id
 value_separator = :
 ```
@@ -199,7 +199,7 @@ const pool = new Pool({
 });
 ```
 
-Multigres injects all context variables plus the role switch:
+Pgvpd injects all context variables plus the role switch:
 
 ```sql
 SET app.current_list_id = '<list_id>';
@@ -220,7 +220,7 @@ CREATE POLICY tenant_isolation ON contacts
 
 ## Transactions
 
-Transactions work normally. Multigres sets the context at the connection
+Transactions work normally. Pgvpd sets the context at the connection
 level, so every statement within a transaction inherits it:
 
 ```typescript
@@ -233,7 +233,7 @@ await db.transaction(async (tx) => {
 ```
 
 No need for `SET LOCAL ROLE` inside transactions — the connection already has
-the role and context set by Multigres before any application queries run.
+the role and context set by Pgvpd before any application queries run.
 
 ## Admin / Worker Operations
 
@@ -241,16 +241,16 @@ For operations that need to bypass RLS — migrations, background workers,
 cross-tenant reporting — connect with a superuser bypass username:
 
 ```typescript
-// Admin pool — bypasses Multigres tenant extraction
+// Admin pool — bypasses Pgvpd tenant extraction
 const adminPool = new Pool({
   host: "localhost",
-  port: 6432,                     // through Multigres (bypass)
+  port: 6432,                     // through Pgvpd (bypass)
   user: "postgres",               // configured in superuser_bypass
   password: "postgres_password",
   database: "mydb",
 });
 
-// Or connect directly to Postgres, skipping Multigres entirely
+// Or connect directly to Postgres, skipping Pgvpd entirely
 const directPool = new Pool({
   host: "localhost",
   port: 5432,                     // direct to Postgres
@@ -314,7 +314,7 @@ export const listContextCleanup: RequestHandler = (req, res, next) => {
 };
 ```
 
-### After (Multigres)
+### After (Pgvpd)
 
 ```typescript
 // db.ts — just a pool and drizzle
@@ -346,7 +346,7 @@ app.use((req, res, next) => {
 connection pool `on('connect')` safety net.
 
 All of that infrastructure existed because the application was the security
-boundary. With Multigres, the database is the security boundary. The
+boundary. With Pgvpd, the database is the security boundary. The
 application just connects.
 
 ## Connection String Format
@@ -395,5 +395,5 @@ This is the fail-closed guarantee working correctly. Check:
 ### "permission denied for table X"
 
 The `app_user` role needs `GRANT SELECT, INSERT, UPDATE, DELETE ON X TO
-app_user`. The `multigres_protect()` function does this automatically.
+app_user`. The `pgvpd_protect()` function does this automatically.
 For existing tables, run it again or grant manually.

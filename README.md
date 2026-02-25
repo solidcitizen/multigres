@@ -1,13 +1,13 @@
-# Multigres
+# Pgvpd
 
 **Virtual Private Database for PostgreSQL**
 
-Multigres is a TCP proxy that makes tenant identity intrinsic to the database
+Pgvpd is a TCP proxy that makes tenant identity intrinsic to the database
 connection — the way Oracle VPD does — so your ORM stays completely unaware of
 multi-tenancy. The database enforces isolation. The application just connects.
 
 ```
-Your App ──→ Multigres Proxy ──→ PostgreSQL (RLS enforced)
+Your App ──→ Pgvpd Proxy ──→ PostgreSQL (RLS enforced)
               ↕                     ↕
         Extracts tenant        Policies filter
         from username          by tenant context
@@ -23,7 +23,7 @@ The application becomes the security boundary — and applications make mistakes
 
 ## The Solution
 
-Encode the tenant in the username. Multigres handles the rest.
+Encode the tenant in the username. Pgvpd handles the rest.
 
 ```bash
 # Instead of connecting as:
@@ -33,7 +33,7 @@ psql -U app_user -d mydb
 psql -h localhost -p 6432 -U app_user.acme -d mydb
 ```
 
-Multigres extracts `acme` as the tenant ID, rewrites the username to
+Pgvpd extracts `acme` as the tenant ID, rewrites the username to
 `app_user`, and after authentication injects:
 
 ```sql
@@ -48,12 +48,12 @@ Every subsequent query is scoped by RLS. The ORM never knows.
 ### 1. Build
 
 ```bash
-git clone https://github.com/solidcitizen/multigres.git
-cd multigres
+git clone https://github.com/solidcitizen/pgvpd.git
+cd pgvpd
 cargo build --release
 ```
 
-The binary is at `target/release/multigres`.
+The binary is at `target/release/pgvpd`.
 
 ### 2. Set up Postgres
 
@@ -64,32 +64,32 @@ psql -U postgres -d your_database -f sql/setup.sql
 This creates:
 - `app_user` role with `NOSUPERUSER NOBYPASSRLS`
 - `current_tenant_id()` function (fail-closed: returns NULL if unset)
-- `multigres_protect()` helper to enable RLS on your tables
-- `multigres_status()` to verify protection
+- `pgvpd_protect()` helper to enable RLS on your tables
+- `pgvpd_status()` to verify protection
 
 ### 3. Protect your tables
 
 ```sql
-SELECT multigres_protect('contacts', 'tenant_id');
-SELECT multigres_protect('invoices', 'org_id');
-SELECT multigres_protect('orders', 'tenant_id');
+SELECT pgvpd_protect('contacts', 'tenant_id');
+SELECT pgvpd_protect('invoices', 'org_id');
+SELECT pgvpd_protect('orders', 'tenant_id');
 
 -- Verify
-SELECT * FROM multigres_status();
+SELECT * FROM pgvpd_status();
 ```
 
-### 4. Start Multigres
+### 4. Start Pgvpd
 
 ```bash
 # Point at your Postgres instance
-./target/release/multigres --upstream-port 5432
+./target/release/pgvpd --upstream-port 5432
 
 # Or with a config file
-cp multigres.conf.example multigres.conf
-./target/release/multigres --config multigres.conf
+cp pgvpd.conf.example pgvpd.conf
+./target/release/pgvpd --config pgvpd.conf
 ```
 
-### 5. Connect through Multigres
+### 5. Connect through Pgvpd
 
 ```bash
 # From psql
@@ -99,16 +99,16 @@ psql -h localhost -p 6432 -U app_user.acme mydb
 DATABASE_URL=postgresql://app_user.acme:password@localhost:6432/mydb
 ```
 
-Your ORM (Drizzle, Prisma, TypeORM, etc.) connects to Multigres instead of
+Your ORM (Drizzle, Prisma, TypeORM, etc.) connects to Pgvpd instead of
 Postgres directly. No code changes. No middleware. No connection pinning.
 
 ## How It Works
 
 1. **Client connects** with username `app_user.acme`
-2. **Multigres parses** the tenant ID (`acme`) from the username
+2. **Pgvpd parses** the tenant ID (`acme`) from the username
 3. **Username is rewritten** to `app_user` for upstream Postgres
 4. **Auth is proxied** transparently (supports cleartext, MD5, SCRAM-SHA-256)
-5. **After auth**, Multigres injects `SET app.current_tenant_id = 'acme'`
+5. **After auth**, Pgvpd injects `SET app.current_tenant_id = 'acme'`
 6. **All traffic** is then piped transparently — zero overhead
 7. **RLS policies** on every tenant-scoped table enforce isolation
 
@@ -123,7 +123,7 @@ Postgres directly. No code changes. No middleware. No connection pinning.
 ### Superuser Bypass
 
 Admin connections (e.g., `postgres`) are passed through without tenant
-extraction. Configure bypass usernames in `multigres.conf`:
+extraction. Configure bypass usernames in `pgvpd.conf`:
 
 ```
 superuser_bypass = postgres
@@ -133,15 +133,15 @@ superuser_bypass = postgres
 
 | Option | Default | Env Var | Description |
 |--------|---------|---------|-------------|
-| `port` | 6432 | `MULTIGRES_PORT` | Listen port |
-| `listen_host` | 127.0.0.1 | `MULTIGRES_HOST` | Bind address |
-| `upstream_host` | 127.0.0.1 | `MULTIGRES_UPSTREAM_HOST` | Postgres host |
-| `upstream_port` | 5432 | `MULTIGRES_UPSTREAM_PORT` | Postgres port |
-| `tenant_separator` | `.` | `MULTIGRES_TENANT_SEPARATOR` | Separator in username |
-| `context_variables` | `app.current_tenant_id` | `MULTIGRES_CONTEXT_VARIABLES` | Comma-separated session variables |
-| `value_separator` | `:` | `MULTIGRES_VALUE_SEPARATOR` | Separator for multiple values |
-| `superuser_bypass` | `postgres` | `MULTIGRES_SUPERUSER_BYPASS` | Bypass usernames (comma-separated) |
-| `log_level` | `info` | `MULTIGRES_LOG_LEVEL` | debug/info/warn/error |
+| `port` | 6432 | `PGVPD_PORT` | Listen port |
+| `listen_host` | 127.0.0.1 | `PGVPD_HOST` | Bind address |
+| `upstream_host` | 127.0.0.1 | `PGVPD_UPSTREAM_HOST` | Postgres host |
+| `upstream_port` | 5432 | `PGVPD_UPSTREAM_PORT` | Postgres port |
+| `tenant_separator` | `.` | `PGVPD_TENANT_SEPARATOR` | Separator in username |
+| `context_variables` | `app.current_tenant_id` | `PGVPD_CONTEXT_VARIABLES` | Comma-separated session variables |
+| `value_separator` | `:` | `PGVPD_VALUE_SEPARATOR` | Separator for multiple values |
+| `superuser_bypass` | `postgres` | `PGVPD_SUPERUSER_BYPASS` | Bypass usernames (comma-separated) |
+| `log_level` | `info` | `PGVPD_LOG_LEVEL` | debug/info/warn/error |
 
 Configuration is loaded in priority order: defaults → config file → environment variables → CLI flags.
 
@@ -150,12 +150,12 @@ Configuration is loaded in priority order: defaults → config file → environm
 For apps that need more than one dimension of identity (e.g., tenant + user):
 
 ```
-# multigres.conf
+# pgvpd.conf
 context_variables = app.current_list_id,app.current_user_id
 value_separator = :
 ```
 
-Username: `app_user.list123:user456` — Multigres injects both:
+Username: `app_user.list123:user456` — Pgvpd injects both:
 
 ```sql
 SET app.current_list_id = 'list123';
@@ -169,7 +169,7 @@ SET ROLE app_user;
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-// Point at Multigres, encode tenant in username
+// Point at Pgvpd, encode tenant in username
 const pool = new Pool({
   host: "localhost",
   port: 6432,
@@ -190,18 +190,18 @@ migration from connection pinning, and troubleshooting.
 
 ## Documentation
 
-- **[docs/architecture.md](docs/architecture.md)** — How Multigres works:
+- **[docs/architecture.md](docs/architecture.md)** — How Pgvpd works:
   connection lifecycle, state machine, security model, wire protocol, and
   comparison with alternatives.
 - **[docs/drizzle-integration.md](docs/drizzle-integration.md)** — Step-by-step
   guide for Drizzle ORM: Express middleware, pool strategies, multi-context
   variables, migration from connection pinning.
 - **[PLAN.md](PLAN.md)** — Design rationale, roadmap, and the problem
-  Multigres solves.
+  Pgvpd solves.
 
 ## Architecture
 
-Multigres is written in **Rust** using [tokio](https://tokio.rs/) for async
+Pgvpd is written in **Rust** using [tokio](https://tokio.rs/) for async
 I/O. It implements the minimum subset of the Postgres v3 wire protocol needed
 for:
 
@@ -211,7 +211,7 @@ for:
 - Injecting `SET` commands after authentication
 - Zero-copy bidirectional piping for all subsequent traffic
 
-After the initial handshake (~3 messages), Multigres adds **zero overhead** —
+After the initial handshake (~3 messages), Pgvpd adds **zero overhead** —
 it's a direct TCP pipe via `tokio::io::copy_bidirectional`.
 
 Single static binary. No runtime dependencies.

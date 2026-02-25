@@ -15,13 +15,13 @@ use crate::tls;
 
 static CONN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Start the Multigres proxy server.
+/// Start the Pgvpd proxy server.
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     config.validate().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     // ─── Build TLS state once at startup ────────────────────────────────
 
-    // TLS termination (client → Multigres)
+    // TLS termination (client → Pgvpd)
     let tls_acceptor = match (&config.tls_port, &config.tls_cert, &config.tls_key) {
         (Some(_), Some(cert), Some(key)) => {
             let server_config = tls::build_server_config(cert, key)?;
@@ -30,7 +30,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
 
-    // TLS origination (Multigres → upstream)
+    // TLS origination (Pgvpd → upstream)
     let upstream_tls: Option<Arc<ClientConfig>> = if config.upstream_tls {
         Some(tls::build_client_config(
             config.upstream_tls_verify,

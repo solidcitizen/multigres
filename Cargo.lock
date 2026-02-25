@@ -295,21 +295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multigres"
-version = "0.2.0"
-dependencies = [
- "bytes",
- "clap",
- "rustls",
- "rustls-pemfile",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,6 +336,21 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pgvpd"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "rustls",
+ "rustls-pemfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

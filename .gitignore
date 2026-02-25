@@ -6,7 +6,7 @@ prototype/node_modules/
 prototype/dist/
 
 # Config (may contain passwords)
-multigres.conf
+pgvpd.conf
 .env
 
 # Project-specific

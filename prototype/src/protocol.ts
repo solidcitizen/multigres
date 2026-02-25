@@ -1,5 +1,5 @@
 /**
- * Multigres — Postgres Wire Protocol Primitives
+ * Pgvpd — Postgres Wire Protocol Primitives
  *
  * Implements the minimum subset of the Postgres v3 wire protocol needed
  * for the proxy to parse StartupMessages, detect auth completion, inject

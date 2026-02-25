@@ -1,4 +1,4 @@
-# Multigres Architecture
+# Pgvpd Architecture
 
 ## The Gap in the Postgres Ecosystem
 
@@ -20,14 +20,14 @@ permanent ownership of security plumbing, and the failure mode is always the
 same: a developer adds a route, forgets the middleware, and queries run as a
 superuser. Fail-open. Cross-tenant data breach.
 
-**Multigres closes this gap by moving tenant identity into the connection
+**Pgvpd closes this gap by moving tenant identity into the connection
 itself.**
 
 ## How It Works
 
 ```
 ┌─────────────┐         ┌────────────────┐         ┌──────────────┐
-│ Application │──TCP───→│   Multigres    │──TCP───→│  PostgreSQL  │
+│ Application │──TCP───→│   Pgvpd    │──TCP───→│  PostgreSQL  │
 │             │         │                │         │              │
 │ Connects as │         │ 1. Parse user  │         │ Authenticates│
 │ app_user.   │         │ 2. Extract     │         │ as app_user  │
@@ -56,7 +56,7 @@ Each client connection goes through a five-state machine:
   AUTHENTICATING
        │
        │  Relay auth exchange bidirectionally
-       │  Client ←→ Multigres ←→ Postgres
+       │  Client ←→ Pgvpd ←→ Postgres
        │  (cleartext, MD5, SCRAM-SHA-256 all work)
        │  Multi-round-trip SASL handled correctly
        │  → Detect AuthenticationOk from server
@@ -98,7 +98,7 @@ only receives `ReadyForQuery` after the context injection is confirmed.
 
 ### Why SET ROLE?
 
-Even though Multigres sets the context variable, the connection must also
+Even though Pgvpd sets the context variable, the connection must also
 switch to a role that cannot bypass RLS. The `app_user` role is created with
 `NOSUPERUSER NOBYPASSRLS`, so `SET ROLE app_user` ensures RLS policies are
 evaluated on every query. Without this, a connection running as `postgres`
@@ -111,7 +111,7 @@ context variable.
 
 ```
 ┌──────────────────────────────────────┐
-│           Multigres Proxy            │
+│           Pgvpd Proxy            │
 ├──────────────┬───────────────────────┤
 │ Tenant Path  │  Superuser Bypass     │
 │              │                       │
@@ -142,8 +142,8 @@ returned**, never **all data returned**:
 
 | Failure | Outcome |
 |---------|---------|
-| Multigres crashes | Connection fails. App gets error. No data leaked. |
-| Context injection fails | Multigres closes connection. No queries run. |
+| Pgvpd crashes | Connection fails. App gets error. No data leaked. |
+| Context injection fails | Pgvpd closes connection. No queries run. |
 | `app.current_tenant_id` not set | `current_tenant_id()` returns NULL. RLS matches zero rows. |
 | Developer writes `SELECT * FROM contacts` | RLS appends the tenant filter. Only tenant's rows returned. |
 | Developer writes `DELETE FROM contacts` | RLS scopes the delete. Only tenant's rows affected. |
@@ -151,13 +151,13 @@ returned**, never **all data returned**:
 
 ### Defense in Depth — Done Right
 
-Multigres follows the principle that **each layer should be authoritative for
+Pgvpd follows the principle that **each layer should be authoritative for
 its own concern**, not duplicate another layer's logic:
 
 | Layer | Responsibility |
 |-------|---------------|
 | Application | Authenticate the user. Determine the tenant. Connect with the right username. |
-| Multigres | Extract tenant from username. Set context. Switch role. |
+| Pgvpd | Extract tenant from username. Set context. Switch role. |
 | PostgreSQL | Enforce isolation via RLS policies. Fail-closed. |
 
 The application does NOT write `WHERE tenant_id = ?`. That's the database's
@@ -167,7 +167,7 @@ mechanism. If the two drift, you get silent data discrepancies, not safety.
 
 ## Wire Protocol
 
-Multigres implements the minimum subset of the
+Pgvpd implements the minimum subset of the
 [Postgres v3 wire protocol](https://www.postgresql.org/docs/current/protocol-message-formats.html)
 needed for the proxy lifecycle:
 
@@ -186,7 +186,7 @@ needed for the proxy lifecycle:
 
 ### SCRAM-SHA-256 Handling
 
-SCRAM authentication requires multiple round-trips. Multigres distinguishes
+SCRAM authentication requires multiple round-trips. Pgvpd distinguishes
 between auth messages that expect a client response (SASL, SASLContinue) and
 those that don't (SASLFinal, AuthenticationOk), preventing deadlocks during
 the handshake.
@@ -195,7 +195,7 @@ the handshake.
 
 Everything else — `Query`, `Parse`, `Bind`, `Execute`, `DataRow`,
 `RowDescription`, `CopyData`, extended query protocol messages — are piped
-through without inspection. After entering `TRANSPARENT` state, Multigres
+through without inspection. After entering `TRANSPARENT` state, Pgvpd
 is a zero-overhead TCP relay via `tokio::io::copy_bidirectional`.
 
 ## Component Map
@@ -218,8 +218,8 @@ sql/
 └── setup.sql         Postgres-side setup:
                         - app_user role (NOSUPERUSER NOBYPASSRLS)
                         - current_tenant_id() function (fail-closed)
-                        - multigres_protect() helper
-                        - multigres_status() verification
+                        - pgvpd_protect() helper
+                        - pgvpd_status() verification
 
 prototype/            TypeScript prototype (validated the architecture)
 ```
@@ -233,7 +233,7 @@ prototype/            TypeScript prototype (validated the architecture)
 | Memory | Minimal per-connection: socket buffers + BytesMut state |
 | Binary | Single static binary, ~2MB release build, no runtime dependencies |
 
-Multigres adds latency only during connection setup. Once in transparent
+Pgvpd adds latency only during connection setup. Once in transparent
 mode, it's equivalent to a direct TCP connection. Tokio's async runtime
 handles thousands of concurrent connections on a single thread.
 
@@ -246,4 +246,4 @@ handles thousands of concurrent connections on a single thread.
 | Drizzle `createDrizzle` wrapper | Application | Partially | Fail-open (forgot `db.rls()`) |
 | Supabase PostgREST | Infrastructure | No (must use REST) | Fail-closed |
 | Nile | Database | Yes | Fail-closed |
-| **Multigres** | **Database** | **Yes** | **Fail-closed** |
+| **Pgvpd** | **Database** | **Yes** | **Fail-closed** |

@@ -1,5 +1,5 @@
 [package]
-name = "multigres"
+name = "pgvpd"
 version = "0.2.0"
 edition = "2024"
 description = "Virtual Private Database for PostgreSQL — tenant isolation at the connection level"
