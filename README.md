@@ -137,9 +137,28 @@ superuser_bypass = postgres
 | `upstream_host` | 127.0.0.1 | `MULTIGRES_UPSTREAM_HOST` | Postgres host |
 | `upstream_port` | 5432 | `MULTIGRES_UPSTREAM_PORT` | Postgres port |
 | `tenant_separator` | `.` | `MULTIGRES_TENANT_SEPARATOR` | Separator in username |
-| `context_variable` | `app.current_tenant_id` | `MULTIGRES_CONTEXT_VARIABLE` | Session variable |
-| `superuser_bypass` | `postgres` | `MULTIGRES_SUPERUSER_BYPASS` | Bypass usernames |
+| `context_variables` | `app.current_tenant_id` | `MULTIGRES_CONTEXT_VARIABLES` | Comma-separated session variables |
+| `value_separator` | `:` | `MULTIGRES_VALUE_SEPARATOR` | Separator for multiple values |
+| `superuser_bypass` | `postgres` | `MULTIGRES_SUPERUSER_BYPASS` | Bypass usernames (comma-separated) |
 | `log_level` | `info` | `MULTIGRES_LOG_LEVEL` | debug/info/warn/error |
+
+### Multiple Context Variables
+
+For apps that need more than one dimension of identity (e.g., tenant + user):
+
+```
+# multigres.conf
+context_variables = app.current_list_id,app.current_user_id
+value_separator = :
+```
+
+Username: `app_user.list123:user456` — Multigres injects both:
+
+```sql
+SET app.current_list_id = 'list123';
+SET app.current_user_id = 'user456';
+SET ROLE app_user;
+```
 
 ## With Drizzle ORM
 
@@ -162,6 +181,21 @@ const db = drizzle(pool);
 const contacts = await db.select().from(contactMaster);
 ```
 
+See **[docs/drizzle-integration.md](docs/drizzle-integration.md)** for the
+full guide: Express integration, pool-per-tenant patterns, transactions,
+migration from connection pinning, and troubleshooting.
+
+## Documentation
+
+- **[docs/architecture.md](docs/architecture.md)** — How Multigres works:
+  connection lifecycle, state machine, security model, wire protocol, and
+  comparison with alternatives.
+- **[docs/drizzle-integration.md](docs/drizzle-integration.md)** — Step-by-step
+  guide for Drizzle ORM: Express middleware, pool strategies, multi-context
+  variables, migration from connection pinning.
+- **[PLAN.md](PLAN.md)** — Design rationale, roadmap, and the problem
+  Multigres solves.
+
 ## Architecture
 
 Multigres is a **zero-dependency** Node.js TCP proxy that implements the
@@ -175,6 +209,9 @@ minimum subset of the Postgres wire protocol needed for:
 
 After the initial handshake (~3 messages), Multigres adds **zero overhead** —
 it's a direct TCP pipe.
+
+See **[docs/architecture.md](docs/architecture.md)** for the full
+architecture deep-dive.
 
 ## License
 
