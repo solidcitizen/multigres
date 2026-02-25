@@ -1,10 +1,10 @@
 {
-  "name": "multigres",
+  "name": "pgvpd",
   "version": "0.1.0",
   "description": "Virtual Private Database for PostgreSQL — tenant isolation at the connection level",
   "main": "dist/index.js",
   "bin": {
-    "multigres": "dist/index.js"
+    "pgvpd": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",

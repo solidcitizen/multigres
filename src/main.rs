@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 const BANNER: &str = r#"
   ╔══════════════════════════════════════════════════╗
-  ║             M U L T I G R E S  v0.2             ║
+  ║                  P G V P D  v0.2                 ║
   ║      Virtual Private Database for PostgreSQL     ║
   ║                    [ Rust ]                      ║
   ╚══════════════════════════════════════════════════╝

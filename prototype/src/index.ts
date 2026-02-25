@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Multigres — Virtual Private Database for PostgreSQL
+ * Pgvpd — Virtual Private Database for PostgreSQL
  *
  * A TCP proxy that makes tenant identity intrinsic to the connection,
  * so your ORM never knows about multi-tenancy.
@@ -13,7 +13,7 @@ import { log } from "./log.js";
 
 const BANNER = `
   ╔══════════════════════════════════════════════════╗
-  ║             M U L T I G R E S  v0.1             ║
+  ║                  P G V P D  v0.1                 ║
   ║      Virtual Private Database for PostgreSQL     ║
   ╚══════════════════════════════════════════════════╝
 `;
@@ -21,10 +21,10 @@ const BANNER = `
 // Handle --help
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(BANNER);
-  console.log(`Usage: multigres [options]
+  console.log(`Usage: pgvpd [options]
 
 Options:
-  --config <path>          Config file path (default: multigres.conf)
+  --config <path>          Config file path (default: pgvpd.conf)
   --port <number>          Listen port (default: 6432)
   --listen-host <host>     Bind address (default: 127.0.0.1)
   --upstream-host <host>   Postgres host (default: 127.0.0.1)
@@ -39,20 +39,20 @@ Options:
   --help, -h               Show this help
 
 Environment Variables:
-  MULTIGRES_PORT, MULTIGRES_HOST, MULTIGRES_UPSTREAM_HOST,
-  MULTIGRES_UPSTREAM_PORT, MULTIGRES_TENANT_SEPARATOR,
-  MULTIGRES_CONTEXT_VARIABLES, MULTIGRES_VALUE_SEPARATOR,
-  MULTIGRES_SUPERUSER_BYPASS,
-  MULTIGRES_LOG_LEVEL
+  PGVPD_PORT, PGVPD_HOST, PGVPD_UPSTREAM_HOST,
+  PGVPD_UPSTREAM_PORT, PGVPD_TENANT_SEPARATOR,
+  PGVPD_CONTEXT_VARIABLES, PGVPD_VALUE_SEPARATOR,
+  PGVPD_SUPERUSER_BYPASS,
+  PGVPD_LOG_LEVEL
 
 How it works:
-  1. Your app connects to Multigres with username 'app_user.tenant_abc'
-  2. Multigres extracts the tenant ID, rewrites the username to 'app_user'
-  3. After auth, Multigres injects: SET app.current_tenant_id = 'tenant_abc'
+  1. Your app connects to Pgvpd with username 'app_user.tenant_abc'
+  2. Pgvpd extracts the tenant ID, rewrites the username to 'app_user'
+  3. After auth, Pgvpd injects: SET app.current_tenant_id = 'tenant_abc'
   4. All queries are scoped by RLS policies — the ORM never knows
 
 Example:
-  multigres --port 6432 --upstream-port 5432 --separator '.'
+  pgvpd --port 6432 --upstream-port 5432 --separator '.'
   psql -h localhost -p 6432 -U app_user.acme mydb
 `);
   process.exit(0);
@@ -60,7 +60,7 @@ Example:
 
 // Handle --version
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  console.log("multigres 0.1.0");
+  console.log("pgvpd 0.1.0");
   process.exit(0);
 }
 

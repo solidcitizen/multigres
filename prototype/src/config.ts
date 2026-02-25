@@ -1,18 +1,18 @@
 /**
- * Multigres — Configuration
+ * Pgvpd — Configuration
  *
  * Loads config from (in priority order):
  *   1. CLI flags (--port, --upstream-host, etc.)
- *   2. Environment variables (MULTIGRES_PORT, etc.)
- *   3. Config file (multigres.conf or --config path)
+ *   2. Environment variables (PGVPD_PORT, etc.)
+ *   3. Config file (pgvpd.conf or --config path)
  *   4. Defaults
  */
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-export interface MultigresConfig {
-  /** Port Multigres listens on for client connections */
+export interface PgvpdConfig {
+  /** Port Pgvpd listens on for client connections */
   listenPort: number;
 
   /** Hostname to bind to */
@@ -65,7 +65,7 @@ export interface MultigresConfig {
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
-const DEFAULTS: MultigresConfig = {
+const DEFAULTS: PgvpdConfig = {
   listenPort: 6432,
   listenHost: "127.0.0.1",
   upstreamHost: "127.0.0.1",
@@ -133,7 +133,7 @@ function parseCLIArgs(args: string[]): Record<string, string> {
 }
 
 /** Map of config file/CLI key names to config property names. */
-const KEY_MAP: Record<string, keyof MultigresConfig> = {
+const KEY_MAP: Record<string, keyof PgvpdConfig> = {
   port: "listenPort",
   "listen-port": "listenPort",
   listen_port: "listenPort",
@@ -160,27 +160,27 @@ const KEY_MAP: Record<string, keyof MultigresConfig> = {
 };
 
 /** Map of environment variable names to config property names. */
-const ENV_MAP: Record<string, keyof MultigresConfig> = {
-  MULTIGRES_PORT: "listenPort",
-  MULTIGRES_HOST: "listenHost",
-  MULTIGRES_UPSTREAM_HOST: "upstreamHost",
-  MULTIGRES_UPSTREAM_PORT: "upstreamPort",
-  MULTIGRES_TENANT_SEPARATOR: "tenantSeparator",
-  MULTIGRES_CONTEXT_VARIABLES: "contextVariables",
-  MULTIGRES_VALUE_SEPARATOR: "valueSeparator",
-  MULTIGRES_SUPERUSER_BYPASS: "superuserBypass",
-  MULTIGRES_LOG_LEVEL: "logLevel",
+const ENV_MAP: Record<string, keyof PgvpdConfig> = {
+  PGVPD_PORT: "listenPort",
+  PGVPD_HOST: "listenHost",
+  PGVPD_UPSTREAM_HOST: "upstreamHost",
+  PGVPD_UPSTREAM_PORT: "upstreamPort",
+  PGVPD_TENANT_SEPARATOR: "tenantSeparator",
+  PGVPD_CONTEXT_VARIABLES: "contextVariables",
+  PGVPD_VALUE_SEPARATOR: "valueSeparator",
+  PGVPD_SUPERUSER_BYPASS: "superuserBypass",
+  PGVPD_LOG_LEVEL: "logLevel",
 };
 
 /**
  * Load configuration from all sources and merge with defaults.
  */
-export function loadConfig(argv: string[] = process.argv.slice(2)): MultigresConfig {
-  const config: MultigresConfig = { ...DEFAULTS };
+export function loadConfig(argv: string[] = process.argv.slice(2)): PgvpdConfig {
+  const config: PgvpdConfig = { ...DEFAULTS };
 
   // 1. Config file (lowest priority after defaults)
   const cliArgs = parseCLIArgs(argv);
-  const configPath = cliArgs["config"] || "multigres.conf";
+  const configPath = cliArgs["config"] || "pgvpd.conf";
   const resolvedPath = resolve(configPath);
 
   if (existsSync(resolvedPath)) {
@@ -205,12 +205,12 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): MultigresCon
 }
 
 function applyValues(
-  config: MultigresConfig,
+  config: PgvpdConfig,
   values: Record<string, string>,
-  keyMap: Record<string, keyof MultigresConfig> | null,
+  keyMap: Record<string, keyof PgvpdConfig> | null,
 ): void {
   for (const [rawKey, rawValue] of Object.entries(values)) {
-    const configKey = keyMap ? keyMap[rawKey] || (rawKey as keyof MultigresConfig) : (rawKey as keyof MultigresConfig);
+    const configKey = keyMap ? keyMap[rawKey] || (rawKey as keyof PgvpdConfig) : (rawKey as keyof PgvpdConfig);
     if (!(configKey in DEFAULTS)) continue;
 
     switch (configKey) {
@@ -230,7 +230,7 @@ function applyValues(
         break;
       case "logLevel":
         if (["debug", "info", "warn", "error"].includes(rawValue)) {
-          config.logLevel = rawValue as MultigresConfig["logLevel"];
+          config.logLevel = rawValue as PgvpdConfig["logLevel"];
         }
         break;
       default:

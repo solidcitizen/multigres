@@ -1,4 +1,4 @@
-# Multigres — Virtual Private Database for PostgreSQL
+# Pgvpd — Virtual Private Database for PostgreSQL
 
 ## The Problem
 
@@ -23,17 +23,17 @@ The result: every team hand-rolls the same AsyncLocalStorage + Proxy +
 connection-pinning infrastructure, takes permanent ownership of security
 plumbing, and prays nobody adds a route that forgets to set the context.
 
-**Multigres closes this gap.**
+**Pgvpd closes this gap.**
 
 ## The Solution
 
-Multigres is a lightweight TCP proxy that sits between your application and
+Pgvpd is a lightweight TCP proxy that sits between your application and
 PostgreSQL. It makes tenant identity intrinsic to the connection — the way
 Oracle VPD does — so your ORM stays completely unaware of multi-tenancy.
 
 ```
 ┌─────────────┐       ┌───────────┐       ┌──────────────┐
-│ Application │──TCP──│ Multigres │──TCP──│  PostgreSQL   │
+│ Application │──TCP──│ Pgvpd │──TCP──│  PostgreSQL   │
 │  (Drizzle,  │       │   Proxy   │       │  (RLS active) │
 │  Prisma,    │       │           │       │              │
 │  pg, etc.)  │       │ Extracts  │       │ Enforces     │
@@ -45,13 +45,13 @@ Oracle VPD does — so your ORM stays completely unaware of multi-tenancy.
 
 ### How It Works
 
-1. Application connects to Multigres with a tenant-encoded username:
+1. Application connects to Pgvpd with a tenant-encoded username:
    `app_user.tenant_abc` (separator is configurable)
 
-2. Multigres parses out the tenant ID (`tenant_abc`), rewrites the username
+2. Pgvpd parses out the tenant ID (`tenant_abc`), rewrites the username
    to `app_user`, and forwards the connection to upstream Postgres.
 
-3. After authentication completes, Multigres injects:
+3. After authentication completes, Pgvpd injects:
    ```sql
    SET app.current_tenant_id = 'tenant_abc';
    SET ROLE app_user;
@@ -69,11 +69,11 @@ Oracle VPD does — so your ORM stays completely unaware of multi-tenancy.
 - `FORCE ROW LEVEL SECURITY` is enabled on all tenant-scoped tables
 - RLS policies reference `current_tenant_id()` which returns `NULL` if unset
 - `NULL` matches zero rows → **no context = no data**
-- If Multigres fails to inject context, the connection is useless, not dangerous
+- If Pgvpd fails to inject context, the connection is useless, not dangerous
 
 ### What This Means for Application Code
 
-Before Multigres:
+Before Pgvpd:
 ```typescript
 // Middleware has to set context, pin connections, manage cleanup...
 await setListContext(req, listId, userId);
@@ -83,10 +83,10 @@ const contacts = await db.select().from(contactMaster);
 // ...hope cleanup runs on every exit path...
 ```
 
-After Multigres:
+After Pgvpd:
 ```typescript
 // Connect with tenant in username. Done.
-const db = drizzle(pool); // pool points at Multigres
+const db = drizzle(pool); // pool points at Pgvpd
 const contacts = await db.select().from(contactMaster);
 // RLS handles everything. The ORM doesn't know or care.
 ```
@@ -143,7 +143,7 @@ v0.2.
 ### Authentication (v0.1)
 
 All auth mechanisms (cleartext, MD5, SCRAM-SHA-256) are proxied transparently.
-Multigres doesn't inspect passwords — it relays the full auth exchange between
+Pgvpd doesn't inspect passwords — it relays the full auth exchange between
 client and server, including multi-round-trip SASL negotiations. The rewritten
 username in the StartupMessage determines which role the server authenticates
 against.
@@ -157,8 +157,8 @@ admin/migration tools to connect directly.
 ## Roadmap
 
 ### v0.2 — TLS + Hardening
-- TLS termination (client → Multigres)
-- TLS origination (Multigres → upstream)
+- TLS termination (client → Pgvpd)
+- TLS origination (Pgvpd → upstream)
 - Connection timeout enforcement
 - Health check endpoint
 
@@ -187,15 +187,15 @@ admin/migration tools to connect directly.
 
 ## Design Principles
 
-1. **The database is the security boundary.** Multigres sets context. Postgres
+1. **The database is the security boundary.** Pgvpd sets context. Postgres
    enforces isolation. The application is not in the security path.
 
 2. **Fail-closed, always.** No context = no data. Never fail-open.
 
 3. **ORM-transparent.** If it speaks the Postgres wire protocol, it works with
-   Multigres. No SDK, no wrapper, no middleware.
+   Pgvpd. No SDK, no wrapper, no middleware.
 
-4. **Zero application changes.** Point your connection string at Multigres and
+4. **Zero application changes.** Point your connection string at Pgvpd and
    encode the tenant in the username. That's it.
 
 5. **Minimal surface area.** A proxy should be boring. Parse what's needed,

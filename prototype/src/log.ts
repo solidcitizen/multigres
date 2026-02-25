@@ -1,5 +1,5 @@
 /**
- * Multigres — Structured Logger
+ * Pgvpd — Structured Logger
  *
  * Simple logger that prefixes messages with timestamp, level, and connection ID.
  */

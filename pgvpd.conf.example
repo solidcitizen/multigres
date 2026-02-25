@@ -1,15 +1,15 @@
 # ──────────────────────────────────────────────────────────────
-# Multigres Configuration
+# Pgvpd Configuration
 # ──────────────────────────────────────────────────────────────
-# Copy to multigres.conf and edit for your environment.
+# Copy to pgvpd.conf and edit for your environment.
 #
 # All values shown are defaults. Uncomment and change as needed.
-# Environment variables (MULTIGRES_*) and CLI flags override these.
+# Environment variables (PGVPD_*) and CLI flags override these.
 # ──────────────────────────────────────────────────────────────
 
 # ─── Listener ────────────────────────────────────────────────
 
-# Port Multigres listens on for client connections
+# Port Pgvpd listens on for client connections
 # port = 6432
 
 # Address to bind to (use 0.0.0.0 to listen on all interfaces)
@@ -49,19 +49,19 @@
 # Comma-separated. Used for admin, migration, superuser access.
 # superuser_bypass = postgres
 
-# ─── TLS Termination (client → Multigres) ────────────────────
+# ─── TLS Termination (client → Pgvpd) ────────────────────
 
 # Port for TLS-encrypted client connections.
 # Requires tls_cert and tls_key. Plain listener stays on `port`.
 # tls_port = 6433
 
 # Path to PEM certificate file
-# tls_cert = /etc/multigres/server.crt
+# tls_cert = /etc/pgvpd/server.crt
 
 # Path to PEM private key file
-# tls_key = /etc/multigres/server.key
+# tls_key = /etc/pgvpd/server.key
 
-# ─── TLS Origination (Multigres → upstream Postgres) ────────
+# ─── TLS Origination (Pgvpd → upstream Postgres) ────────
 
 # Connect to upstream Postgres over TLS
 # upstream_tls = false
@@ -70,7 +70,7 @@
 # upstream_tls_verify = true
 
 # Custom CA certificate for upstream verification
-# upstream_tls_ca = /etc/multigres/upstream-ca.crt
+# upstream_tls_ca = /etc/pgvpd/upstream-ca.crt
 
 # ─── Timeouts ────────────────────────────────────────────────
 

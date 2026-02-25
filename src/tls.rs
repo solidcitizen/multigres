@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::sync::Arc;
 
-/// Build a `ServerConfig` for TLS termination (client → Multigres).
+/// Build a `ServerConfig` for TLS termination (client → Pgvpd).
 pub fn build_server_config(
     cert_path: &str,
     key_path: &str,
@@ -22,7 +22,7 @@ pub fn build_server_config(
     Ok(Arc::new(config))
 }
 
-/// Build a `ClientConfig` for TLS origination (Multigres → upstream Postgres).
+/// Build a `ClientConfig` for TLS origination (Pgvpd → upstream Postgres).
 ///
 /// - `verify`: if false, skip certificate verification (for dev/self-signed)
 /// - `ca_path`: optional path to a custom CA certificate

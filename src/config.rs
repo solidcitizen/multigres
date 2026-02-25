@@ -4,12 +4,12 @@ use clap::Parser;
 use std::fs;
 use std::path::Path;
 
-/// Multigres — Virtual Private Database for PostgreSQL
+/// Pgvpd — Virtual Private Database for PostgreSQL
 #[derive(Parser, Debug)]
-#[command(name = "multigres", version, about)]
+#[command(name = "pgvpd", version, about)]
 pub struct Cli {
     /// Config file path
-    #[arg(long, default_value = "multigres.conf")]
+    #[arg(long, default_value = "pgvpd.conf")]
     pub config: String,
 
     /// Listen port
@@ -274,58 +274,58 @@ fn apply_config_file(config: &mut Config, content: &str) {
 }
 
 fn apply_env(config: &mut Config) {
-    if let Ok(v) = std::env::var("MULTIGRES_PORT") {
+    if let Ok(v) = std::env::var("PGVPD_PORT") {
         if let Ok(p) = v.parse() {
             config.listen_port = p;
         }
     }
-    if let Ok(v) = std::env::var("MULTIGRES_HOST") {
+    if let Ok(v) = std::env::var("PGVPD_HOST") {
         config.listen_host = v;
     }
-    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_HOST") {
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_HOST") {
         config.upstream_host = v;
     }
-    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_PORT") {
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_PORT") {
         if let Ok(p) = v.parse() {
             config.upstream_port = p;
         }
     }
-    if let Ok(v) = std::env::var("MULTIGRES_TENANT_SEPARATOR") {
+    if let Ok(v) = std::env::var("PGVPD_TENANT_SEPARATOR") {
         config.tenant_separator = v;
     }
-    if let Ok(v) = std::env::var("MULTIGRES_CONTEXT_VARIABLES") {
+    if let Ok(v) = std::env::var("PGVPD_CONTEXT_VARIABLES") {
         config.context_variables = v.split(',').map(|s| s.trim().to_string()).collect();
     }
-    if let Ok(v) = std::env::var("MULTIGRES_VALUE_SEPARATOR") {
+    if let Ok(v) = std::env::var("PGVPD_VALUE_SEPARATOR") {
         config.value_separator = v;
     }
-    if let Ok(v) = std::env::var("MULTIGRES_SUPERUSER_BYPASS") {
+    if let Ok(v) = std::env::var("PGVPD_SUPERUSER_BYPASS") {
         config.superuser_bypass = v.split(',').map(|s| s.trim().to_string()).collect();
     }
-    if let Ok(v) = std::env::var("MULTIGRES_LOG_LEVEL") {
+    if let Ok(v) = std::env::var("PGVPD_LOG_LEVEL") {
         config.log_level = v;
     }
-    if let Ok(v) = std::env::var("MULTIGRES_TLS_PORT") {
+    if let Ok(v) = std::env::var("PGVPD_TLS_PORT") {
         if let Ok(p) = v.parse() {
             config.tls_port = Some(p);
         }
     }
-    if let Ok(v) = std::env::var("MULTIGRES_TLS_CERT") {
+    if let Ok(v) = std::env::var("PGVPD_TLS_CERT") {
         config.tls_cert = Some(v);
     }
-    if let Ok(v) = std::env::var("MULTIGRES_TLS_KEY") {
+    if let Ok(v) = std::env::var("PGVPD_TLS_KEY") {
         config.tls_key = Some(v);
     }
-    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS") {
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_TLS") {
         config.upstream_tls = matches!(v.as_str(), "true" | "1" | "yes");
     }
-    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS_VERIFY") {
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_TLS_VERIFY") {
         config.upstream_tls_verify = !matches!(v.as_str(), "false" | "0" | "no");
     }
-    if let Ok(v) = std::env::var("MULTIGRES_UPSTREAM_TLS_CA") {
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_TLS_CA") {
         config.upstream_tls_ca = Some(v);
     }
-    if let Ok(v) = std::env::var("MULTIGRES_HANDSHAKE_TIMEOUT") {
+    if let Ok(v) = std::env::var("PGVPD_HANDSHAKE_TIMEOUT") {
         if let Ok(t) = v.parse() {
             config.handshake_timeout_secs = t;
         }

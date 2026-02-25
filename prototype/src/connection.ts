@@ -1,5 +1,5 @@
 /**
- * Multigres — Per-Connection Handler
+ * Pgvpd — Per-Connection Handler
  *
  * State machine managing the lifecycle of a single client connection:
  *
@@ -36,7 +36,7 @@ import {
   BackendMsg,
   type BackendMessage,
 } from "./protocol.js";
-import type { MultigresConfig } from "./config.js";
+import type { PgvpdConfig } from "./config.js";
 import { log } from "./log.js";
 
 enum State {
@@ -62,7 +62,7 @@ export class Connection {
 
   constructor(
     private client: net.Socket,
-    private config: MultigresConfig,
+    private config: PgvpdConfig,
     connId: string,
   ) {
     this.connId = connId;
