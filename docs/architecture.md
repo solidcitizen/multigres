@@ -13,14 +13,12 @@ primitive. `set_config` is a key-value store hanging off the session —
 nothing about the connection credentials themselves carries tenant identity.
 The database can't derive "who is this tenant?" from the connection alone.
 
-Every Node.js/TypeScript team building on Postgres re-discovers this gap and
-hand-rolls the same solution: `AsyncLocalStorage` for request context,
-connection pinning to keep `SET ROLE` and queries on the same connection,
-cleanup middleware to reset state, and a `Proxy` wrapper to make it
-transparent. They take permanent ownership of security plumbing, and the
-failure mode is always the same: a developer adds a route, forgets the
-middleware, and queries run as a superuser. Fail-open. Cross-tenant data
-breach.
+Every team building on Postgres re-discovers this gap and hand-rolls the same
+solution: middleware for request context, connection pinning to keep `SET ROLE`
+and queries on the same connection, cleanup handlers to reset state. They take
+permanent ownership of security plumbing, and the failure mode is always the
+same: a developer adds a route, forgets the middleware, and queries run as a
+superuser. Fail-open. Cross-tenant data breach.
 
 **Multigres closes this gap by moving tenant identity into the connection
 itself.**
@@ -57,9 +55,10 @@ Each client connection goes through a five-state machine:
        ▼
   AUTHENTICATING
        │
-       │  Proxy auth messages bidirectionally
+       │  Relay auth exchange bidirectionally
        │  Client ←→ Multigres ←→ Postgres
        │  (cleartext, MD5, SCRAM-SHA-256 all work)
+       │  Multi-round-trip SASL handled correctly
        │  → Detect AuthenticationOk from server
        ▼
   POST_AUTH
@@ -79,7 +78,8 @@ Each client connection goes through a five-state machine:
        ▼
   TRANSPARENT
        │
-       │  Bidirectional TCP pipe. Zero overhead.
+       │  Zero-copy bidirectional pipe
+       │  (tokio::io::copy_bidirectional)
        │  All queries hit a connection with:
        │    - app.current_tenant_id = 'acme'
        │    - ROLE = app_user (NOBYPASSRLS)
@@ -177,34 +177,42 @@ needed for the proxy lifecycle:
 |---------|-----------|-----|
 | StartupMessage | Client → Server | Extract username, rewrite, forward |
 | SSLRequest | Client → Server | Deny with 'N' (v0.1) |
-| Authentication (R) | Server → Client | Detect AuthenticationOk |
+| CancelRequest | Client → Server | Detect and close gracefully |
+| Authentication (R) | Server → Client | Relay auth challenges, detect AuthenticationOk |
 | ReadyForQuery (Z) | Server → Client | Buffer during injection |
 | ErrorResponse (E) | Server → Client | Detect injection failures |
 | CommandComplete (C) | Server → Client | Consume injection responses |
-| ParameterStatus (S) | Server → Client | Forward during post-auth |
+| ParameterStatus (S) | Server → Client | Forward during post-auth and injection |
+
+### SCRAM-SHA-256 Handling
+
+SCRAM authentication requires multiple round-trips. Multigres distinguishes
+between auth messages that expect a client response (SASL, SASLContinue) and
+those that don't (SASLFinal, AuthenticationOk), preventing deadlocks during
+the handshake.
 
 ### Messages Not Parsed (Transparent)
 
 Everything else — `Query`, `Parse`, `Bind`, `Execute`, `DataRow`,
 `RowDescription`, `CopyData`, extended query protocol messages — are piped
 through without inspection. After entering `TRANSPARENT` state, Multigres
-is a zero-overhead TCP relay.
+is a zero-overhead TCP relay via `tokio::io::copy_bidirectional`.
 
 ## Component Map
 
 ```
 src/
-├── index.ts          CLI entry point, banner, shutdown handling
-├── proxy.ts          TCP server, accepts connections
-├── connection.ts     Per-connection state machine (the core logic)
-├── protocol.ts       Wire protocol primitives:
+├── main.rs           Entry point, banner, tracing setup
+├── proxy.rs          TCP listener (tokio), spawns per-connection tasks
+├── connection.rs     Per-connection async state machine (the core logic)
+├── protocol.rs       Wire protocol primitives:
 │                       - StartupMessage parse/build
-│                       - MessageFramer (TCP stream → messages)
+│                       - Backend message framing (type + length + payload)
 │                       - Query message builder
 │                       - ErrorResponse builder
-│                       - Message type detection helpers
-├── config.ts         Configuration from file/env/CLI
-└── log.ts            Structured colored logger
+│                       - Auth challenge detection (SCRAM-aware)
+│                       - SQL escaping (escape_literal, quote_ident)
+└── config.rs         Configuration from file/env/CLI (clap)
 
 sql/
 └── setup.sql         Postgres-side setup:
@@ -212,18 +220,22 @@ sql/
                         - current_tenant_id() function (fail-closed)
                         - multigres_protect() helper
                         - multigres_status() verification
+
+prototype/            TypeScript prototype (validated the architecture)
 ```
 
 ## Performance Characteristics
 
 | Phase | Overhead |
 |-------|----------|
-| Startup (WAIT_STARTUP → INJECTING) | ~2 extra SQL statements per connection |
-| Transparent pipe | Zero — raw TCP relay, no message parsing |
-| Memory | ~1KB per connection (socket buffers + state) |
+| Startup (connection setup → injection) | ~2 extra SQL statements per connection |
+| Transparent pipe | Zero — `tokio::io::copy_bidirectional`, no message parsing |
+| Memory | Minimal per-connection: socket buffers + BytesMut state |
+| Binary | Single static binary, ~2MB release build, no runtime dependencies |
 
 Multigres adds latency only during connection setup. Once in transparent
-mode, it's equivalent to a direct TCP connection.
+mode, it's equivalent to a direct TCP connection. Tokio's async runtime
+handles thousands of concurrent connections on a single thread.
 
 ## Comparison with Alternatives
 
