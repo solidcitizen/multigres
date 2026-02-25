@@ -4,7 +4,9 @@
 //!   WaitStartup → Authenticating → PostAuth → Injecting → Transparent
 
 use bytes::BytesMut;
+use rustls::ClientConfig;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
@@ -14,25 +16,69 @@ use crate::protocol::{
     build_error_response, build_query_message, build_startup_message, escape_literal, quote_ident,
     try_read_backend_message, try_read_startup, StartupType, SSL_DENY,
 };
+use crate::stream::{ClientStream, UpstreamStream};
+use crate::tls::parse_server_name;
 
 /// Handle a single client connection through its full lifecycle.
-pub async fn handle_connection(mut client: TcpStream, config: Arc<Config>, conn_id: u64) {
+pub async fn handle_connection(
+    mut client: ClientStream,
+    config: Arc<Config>,
+    upstream_tls: Option<Arc<ClientConfig>>,
+    conn_id: u64,
+) {
     let peer = client
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".into());
     debug!(conn_id, peer, "new connection");
 
-    if let Err(e) = run_connection(&mut client, &config, conn_id).await {
+    let timeout = Duration::from_secs(config.handshake_timeout_secs);
+
+    // Handshake phases (startup + auth + injection) run under timeout.
+    // The transparent pipe runs without timeout so long queries work.
+    // Extract the server stream before awaiting copy_bidirectional so
+    // the non-Send error type doesn't live across the await boundary.
+    let server = match tokio::time::timeout(
+        timeout,
+        handshake(&mut client, &config, &upstream_tls, conn_id),
+    )
+    .await
+    {
+        Ok(Ok(Some(server))) => server,
+        Ok(Ok(None)) => return,
+        Ok(Err(e)) => {
+            debug!(conn_id, error = %e, "connection ended");
+            return;
+        }
+        Err(_) => {
+            warn!(conn_id, "handshake timeout");
+            send_error(
+                &mut client,
+                "FATAL",
+                "08006",
+                "handshake timeout — no StartupMessage received in time",
+            )
+            .await;
+            return;
+        }
+    };
+
+    let mut server = server;
+    debug!(conn_id, "transparent pipe");
+    if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut server).await {
         debug!(conn_id, error = %e, "connection ended");
     }
 }
 
-async fn run_connection(
-    client: &mut TcpStream,
+/// Run the handshake phases: startup parsing, auth relay, context injection.
+/// Returns `Some(server)` if we should enter transparent pipe mode,
+/// or `None` if the connection was fully handled (cancel, superuser bypass).
+async fn handshake(
+    client: &mut ClientStream,
     config: &Config,
+    upstream_tls: &Option<Arc<ClientConfig>>,
     conn_id: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Option<UpstreamStream>, Box<dyn std::error::Error + Send + Sync>> {
     // ─── Phase 1: Read StartupMessage ───────────────────────────────────
 
     let mut buf = BytesMut::with_capacity(1024);
@@ -44,22 +90,21 @@ async fn run_connection(
             Some(StartupType::SslRequest) => {
                 debug!(conn_id, "SSL request denied");
                 client.write_all(SSL_DENY).await?;
-                // Client will retry with plaintext StartupMessage
                 continue;
             }
             Some(StartupType::CancelRequest) => {
                 debug!(conn_id, "cancel request — closing");
-                return Ok(());
+                return Ok(None);
             }
             Some(StartupType::Startup(s)) => break s,
-            None => continue, // need more data
+            None => continue,
         }
     };
 
     let raw_user = startup.params.get("user").cloned().unwrap_or_default();
     if raw_user.is_empty() {
         send_error(client, "FATAL", "08004", "no username in StartupMessage").await;
-        return Ok(());
+        return Ok(None);
     }
 
     let database = startup
@@ -72,18 +117,14 @@ async fn run_connection(
 
     if config.superuser_bypass.contains(&raw_user) {
         info!(conn_id, user = %raw_user, "superuser bypass");
-        let mut server =
-            TcpStream::connect((&*config.upstream_host, config.upstream_port)).await?;
-        // Forward original startup message
+        let mut server = connect_upstream(config, upstream_tls).await?;
         let original = build_startup_message(&startup.params);
         server.write_all(&original).await?;
-        // Forward any buffered data
         if !buf.is_empty() {
             server.write_all(&buf).await?;
         }
-        // Transparent pipe
-        tokio::io::copy_bidirectional(client, &mut server).await?;
-        return Ok(());
+        // Superuser bypass: go straight to transparent pipe
+        return Ok(Some(server));
     }
 
     // ─── Extract tenant context from username ───────────────────────────
@@ -101,7 +142,7 @@ async fn run_connection(
                 ),
             )
             .await;
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -110,10 +151,9 @@ async fn run_connection(
 
     if actual_user.is_empty() || tenant_payload.is_empty() {
         send_error(client, "FATAL", "28000", "empty role or context in username").await;
-        return Ok(());
+        return Ok(None);
     }
 
-    // Split payload into multiple values if needed
     let context_values: Vec<&str> = if config.context_variables.len() > 1 {
         tenant_payload.split(&config.value_separator).collect()
     } else {
@@ -132,12 +172,12 @@ async fn run_connection(
             ),
         )
         .await;
-        return Ok(());
+        return Ok(None);
     }
 
     if context_values.iter().any(|v| v.is_empty()) {
         send_error(client, "FATAL", "28000", "empty context value in username").await;
-        return Ok(());
+        return Ok(None);
     }
 
     let context_summary: String = config
@@ -158,7 +198,7 @@ async fn run_connection(
 
     // ─── Phase 2: Connect to upstream ───────────────────────────────────
 
-    let mut server = TcpStream::connect((&*config.upstream_host, config.upstream_port)).await?;
+    let mut server = connect_upstream(config, upstream_tls).await?;
     debug!(
         conn_id,
         host = %config.upstream_host,
@@ -172,7 +212,6 @@ async fn run_connection(
     let startup_msg = build_startup_message(&rewritten_params);
     server.write_all(&startup_msg).await?;
 
-    // Forward any extra client data buffered after StartupMessage
     if !buf.is_empty() {
         server.write_all(&buf).await?;
         buf.clear();
@@ -198,10 +237,8 @@ async fn run_connection(
                 warn!(conn_id, error = %msg.error_message(), "auth error from server");
             }
 
-            // Forward auth challenges, errors, etc. to client
             client.write_all(&msg.raw).await?;
 
-            // If server sent an auth challenge expecting a client response, relay it
             if msg.is_auth_challenge() {
                 let mut client_buf = BytesMut::with_capacity(1024);
                 client.read_buf(&mut client_buf).await?;
@@ -213,7 +250,6 @@ async fn run_connection(
     // ─── Phase 4: Post-auth — wait for ReadyForQuery ────────────────────
 
     let buffered_ready: BytesMut = loop {
-        // If there's leftover data in server_buf from auth phase, process it first
         if server_buf.is_empty() {
             server.read_buf(&mut server_buf).await?;
         }
@@ -230,7 +266,6 @@ async fn run_connection(
                 warn!(conn_id, error = %msg.error_message(), "post-auth error");
             }
 
-            // Forward ParameterStatus, BackendKeyData, etc. to client
             client.write_all(&msg.raw).await?;
         }
 
@@ -266,7 +301,6 @@ async fn run_connection(
             }
 
             if msg.is_ready_for_query() {
-                // Server confirmed our SETs. Send buffered ReadyForQuery to client.
                 info!(
                     conn_id,
                     context = %context_summary,
@@ -278,11 +312,9 @@ async fn run_connection(
                 break;
             }
 
-            // Forward ParameterStatus if server sends them for SET commands
             if msg.is_parameter_status() {
                 client.write_all(&msg.raw).await?;
             }
-            // CommandComplete — consume silently
         }
 
         if injection_done {
@@ -290,22 +322,32 @@ async fn run_connection(
         }
     }
 
-    // ─── Phase 6: Transparent pipe ──────────────────────────────────────
-
-    debug!(conn_id, "transparent pipe");
-
     // Flush any remaining buffered server data
     if !server_buf.is_empty() {
         client.write_all(&server_buf).await?;
     }
 
-    // Zero-copy bidirectional relay
-    tokio::io::copy_bidirectional(client, &mut server).await?;
-
-    Ok(())
+    Ok(Some(server))
 }
 
-async fn send_error(client: &mut TcpStream, severity: &str, sqlstate: &str, message: &str) {
+/// Connect to upstream Postgres, optionally wrapping in TLS.
+async fn connect_upstream(
+    config: &Config,
+    upstream_tls: &Option<Arc<ClientConfig>>,
+) -> Result<UpstreamStream, Box<dyn std::error::Error + Send + Sync>> {
+    let tcp = TcpStream::connect((&*config.upstream_host, config.upstream_port)).await?;
+
+    if let Some(tls_config) = upstream_tls {
+        let server_name = parse_server_name(&config.upstream_host)?;
+        let connector = tokio_rustls::TlsConnector::from(Arc::clone(tls_config));
+        let tls_stream = connector.connect(server_name, tcp).await?;
+        Ok(UpstreamStream::Tls(tls_stream))
+    } else {
+        Ok(UpstreamStream::Plain(tcp))
+    }
+}
+
+async fn send_error(client: &mut ClientStream, severity: &str, sqlstate: &str, message: &str) {
     warn!(message, "rejecting connection");
     let msg = build_error_response(severity, sqlstate, message);
     let _ = client.write_all(&msg).await;
