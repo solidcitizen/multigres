@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.js
+*.d.ts
+*.js.map
+!src/
+multigres.conf
+.env
+why-we-are-here.txt

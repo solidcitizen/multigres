@@ -1,0 +1,47 @@
+# ──────────────────────────────────────────────────────────────
+# Multigres Configuration
+# ──────────────────────────────────────────────────────────────
+# Copy to multigres.conf and edit for your environment.
+#
+# All values shown are defaults. Uncomment and change as needed.
+# Environment variables (MULTIGRES_*) and CLI flags override these.
+# ──────────────────────────────────────────────────────────────
+
+# ─── Listener ────────────────────────────────────────────────
+
+# Port Multigres listens on for client connections
+# port = 6432
+
+# Address to bind to (use 0.0.0.0 to listen on all interfaces)
+# listen_host = 127.0.0.1
+
+# ─── Upstream PostgreSQL ─────────────────────────────────────
+
+# Postgres host
+# upstream_host = 127.0.0.1
+
+# Postgres port (use your Supabase local port if applicable)
+# upstream_port = 5432
+
+# ─── Tenant Extraction ──────────────────────────────────────
+
+# Character separating the role from the tenant ID in the username.
+# With separator '.', username 'app_user.acme' yields:
+#   role = 'app_user', tenant = 'acme'
+# tenant_separator = .
+
+# Postgres session variable set for each tenant connection.
+# Your RLS policies should reference this via current_setting().
+# context_variable = app.current_tenant_id
+
+# ─── Access Control ─────────────────────────────────────────
+
+# Usernames that bypass tenant extraction entirely.
+# These connections are passed through to upstream as-is.
+# Comma-separated. Used for admin, migration, superuser access.
+# superuser_bypass = postgres
+
+# ─── Logging ─────────────────────────────────────────────────
+
+# Log level: debug, info, warn, error
+# log_level = info
