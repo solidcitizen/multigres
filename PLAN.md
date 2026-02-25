@@ -95,6 +95,9 @@ const contacts = await db.select().from(contactMaster);
 
 ### v0.1 — TCP Proxy (this release)
 
+Written in Rust with [tokio](https://tokio.rs/) for async I/O. Single static
+binary, no runtime dependencies.
+
 Core proxy that handles the connection lifecycle:
 
 ```
@@ -105,6 +108,7 @@ State Machine (per connection):
        │              Rewrite username
        ▼
   AUTHENTICATING ──→ Proxy auth exchange bidirectionally
+       │              Relay SCRAM-SHA-256, MD5, cleartext
        │              Detect AuthenticationOk
        ▼
   POST_AUTH ──────→ Forward ParameterStatus, BackendKeyData
@@ -114,16 +118,21 @@ State Machine (per connection):
        │              Consume server response
        │              Forward buffered ReadyForQuery to client
        ▼
-  TRANSPARENT ────→ Pipe all traffic bidirectionally
+  TRANSPARENT ────→ Zero-copy bidirectional pipe
+                      (tokio::io::copy_bidirectional)
 ```
 
 Components:
-- `src/protocol.ts` — Wire protocol parser (StartupMessage, message framing)
-- `src/connection.ts` — Per-connection state machine
-- `src/proxy.ts` — TCP server, accepts and manages connections
-- `src/config.ts` — Configuration (file, env vars, CLI flags)
-- `src/index.ts` — CLI entry point
+- `src/protocol.rs` — Wire protocol parser (StartupMessage, backend messages,
+  SQL escaping, message builders)
+- `src/connection.rs` — Per-connection async state machine
+- `src/proxy.rs` — TCP listener, accepts and spawns per-connection tasks
+- `src/config.rs` — Configuration (file, env vars, CLI flags via clap)
+- `src/main.rs` — Entry point, tracing setup
 - `sql/setup.sql` — Postgres-side setup (roles, functions, helpers)
+
+A TypeScript prototype (`prototype/`) validated the architecture before the
+Rust implementation.
 
 ### SSL Handling (v0.1)
 
@@ -134,9 +143,10 @@ v0.2.
 ### Authentication (v0.1)
 
 All auth mechanisms (cleartext, MD5, SCRAM-SHA-256) are proxied transparently.
-Multigres doesn't inspect passwords — it just forwards the auth exchange
-between client and server. The rewritten username in the StartupMessage
-determines which role the server authenticates against.
+Multigres doesn't inspect passwords — it relays the full auth exchange between
+client and server, including multi-round-trip SASL negotiations. The rewritten
+username in the StartupMessage determines which role the server authenticates
+against.
 
 ### Superuser Bypass
 
@@ -151,7 +161,6 @@ admin/migration tools to connect directly.
 - TLS origination (Multigres → upstream)
 - Connection timeout enforcement
 - Health check endpoint
-- Structured logging (JSON)
 
 ### v0.3 — Connection Pooling
 - Built-in connection pool (replace PgBouncer in the stack)
@@ -168,13 +177,6 @@ admin/migration tools to connect directly.
 - Per-tenant connection limits
 - Query timeout per tenant
 - Tenant allow/deny lists
-
-### v0.9 — Rust Rewrite
-- Rewrite proxy in Rust, designed from the ground up for production
-- Async I/O with tokio, zero-copy proxying, built-in connection pooling
-- Single static binary, no runtime dependencies
-- Lower latency, smaller memory footprint, no GC pauses
-- TypeScript prototype validated the architecture; Rust version is not a port
 
 ### v1.0 — Production Ready
 - Battle-tested with real workloads
