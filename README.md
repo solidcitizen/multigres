@@ -213,6 +213,26 @@ it's a direct TCP pipe.
 See **[docs/architecture.md](docs/architecture.md)** for the full
 architecture deep-dive.
 
+## Implementation Language
+
+v0.1 is written in **TypeScript (Node.js)** — the right choice for proving
+the concept and iterating quickly. The wire protocol parser is ~300 lines and
+the connection state machine is ~350. In transparent mode, Node.js delegates
+to OS-level socket piping with minimal overhead.
+
+That said, a proxy in the data path between your application and database
+should ultimately be written in a systems language. The roadmap includes a
+**Rust rewrite** for production use, which would provide:
+
+- Lower per-connection latency
+- Smaller memory footprint at scale
+- No garbage collection pauses
+- Single binary distribution (no runtime dependency)
+
+The TypeScript implementation is the reference — it defines the protocol
+handling, state machine, and security model. The Rust port will be a bounded
+effort against a working spec.
+
 ## License
 
 MIT
