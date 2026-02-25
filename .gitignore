@@ -1,9 +1,13 @@
-node_modules/
-dist/
-*.js
-*.d.ts
-*.js.map
-!src/
+# Rust
+/target/
+
+# TypeScript prototype
+prototype/node_modules/
+prototype/dist/
+
+# Config (may contain passwords)
 multigres.conf
 .env
+
+# Project-specific
 why-we-are-here.txt

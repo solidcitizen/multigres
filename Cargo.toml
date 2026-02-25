@@ -1,0 +1,13 @@
+[package]
+name = "multigres"
+version = "0.1.0"
+edition = "2024"
+description = "Virtual Private Database for PostgreSQL — tenant isolation at the connection level"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
