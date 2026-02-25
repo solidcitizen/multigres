@@ -170,10 +170,11 @@ admin/migration tools to connect directly.
 - Tenant allow/deny lists
 
 ### v0.9 — Rust Rewrite
-- Rewrite proxy in Rust for production-grade performance
+- Rewrite proxy in Rust, designed from the ground up for production
+- Async I/O with tokio, zero-copy proxying, built-in connection pooling
 - Single static binary, no runtime dependencies
 - Lower latency, smaller memory footprint, no GC pauses
-- TypeScript v0.1–v0.5 serves as the reference implementation and spec
+- TypeScript prototype validated the architecture; Rust version is not a port
 
 ### v1.0 — Production Ready
 - Battle-tested with real workloads

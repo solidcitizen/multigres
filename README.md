@@ -229,9 +229,10 @@ should ultimately be written in a systems language. The roadmap includes a
 - No garbage collection pauses
 - Single binary distribution (no runtime dependency)
 
-The TypeScript implementation is the reference — it defines the protocol
-handling, state machine, and security model. The Rust port will be a bounded
-effort against a working spec.
+The TypeScript implementation is a prototype that validated the architecture.
+The Rust version will be designed from the ground up for production
+characteristics: async I/O with tokio, zero-copy proxying, built-in
+connection pooling, and proper backpressure handling.
 
 ## License
 
