@@ -173,6 +173,47 @@ Steps 1–2 are the same, but Pgvpd authenticates the client itself (cleartext),
 - RLS policies match `tenant_id = current_tenant_id()` — NULL matches nothing
 - **No context = no data. Never fail-open.**
 
+### Using Existing Roles (`set_role`)
+
+Managed Postgres platforms (Supabase, Neon, etc.) ship with NOLOGIN roles
+that already have RLS policies and table grants attached:
+
+```
+authenticated  ← NOLOGIN, has all RLS policies and grants
+service_role   ← NOLOGIN, bypasses RLS
+anon           ← NOLOGIN, public access
+```
+
+These roles can't authenticate over the wire — the platform activates them
+internally with `SET ROLE` after JWT validation. Without `set_role`, pgvpd
+would authenticate as `app_user` and then `SET ROLE app_user`, which has
+none of the existing policies. You'd have to duplicate every policy for the
+new role.
+
+`set_role` eliminates this. Pgvpd authenticates as `app_user` (LOGIN) but
+switches to the platform's existing role:
+
+```ini
+# pgvpd.conf
+set_role = authenticated
+```
+
+```sql
+-- One-time setup: allow app_user to assume the role
+GRANT authenticated TO app_user;
+```
+
+Now pgvpd injects:
+
+```sql
+SET app.current_tenant_id = 'acme';
+SET ROLE authenticated;   -- not app_user
+```
+
+Every existing policy, grant, and RLS check works unchanged. `app_user`
+exists only to get through the TCP handshake. When `set_role` is not
+configured, pgvpd uses the rewritten username as before.
+
 ### Superuser Bypass
 
 Admin connections (e.g., `postgres`) are passed through without tenant
