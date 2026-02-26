@@ -164,6 +164,11 @@ superuser_bypass = postgres
 | `pool_checkout_timeout` | 5 | `PGVPD_POOL_CHECKOUT_TIMEOUT` | Seconds to wait when pool is full |
 | `resolvers` | — | `PGVPD_RESOLVERS` | Path to context resolver TOML file |
 | `set_role` | *(login user)* | `PGVPD_SET_ROLE` | Override SET ROLE target (e.g., `authenticated`) |
+| `tenant_allow` | *(none)* | `PGVPD_TENANT_ALLOW` | Comma-separated allow list (only these tenants) |
+| `tenant_deny` | *(none)* | `PGVPD_TENANT_DENY` | Comma-separated deny list (block these tenants) |
+| `tenant_max_connections` | *(none)* | `PGVPD_TENANT_MAX_CONNECTIONS` | Max concurrent connections per tenant |
+| `tenant_rate_limit` | *(none)* | `PGVPD_TENANT_RATE_LIMIT` | Max new connections per tenant per second |
+| `tenant_query_timeout` | *(none)* | `PGVPD_TENANT_QUERY_TIMEOUT` | Seconds of inactivity before connection terminated |
 | `admin_port` | *(disabled)* | `PGVPD_ADMIN_PORT` | HTTP port for admin API (health, metrics, status) |
 
 Configuration is loaded in priority order: defaults → config file → environment variables → CLI flags.

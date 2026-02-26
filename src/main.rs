@@ -8,13 +8,14 @@ mod protocol;
 mod resolver;
 mod proxy;
 mod stream;
+mod tenant;
 mod tls;
 
 use tracing_subscriber::EnvFilter;
 
 const BANNER: &str = r#"
   ╔══════════════════════════════════════════════════╗
-  ║                  P G V P D  v0.5                 ║
+  ║                  P G V P D  v0.6                 ║
   ║      Virtual Private Database for PostgreSQL     ║
   ║                    [ Rust ]                      ║
   ╚══════════════════════════════════════════════════╝

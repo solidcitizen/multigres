@@ -315,6 +315,90 @@ fi
 stop_pgvpd
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Suite 5: Tenant Isolation
+# ═══════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "═══ Suite 5: Tenant Isolation ═══"
+start_pgvpd tests/pgvpd-tenant-test.conf
+
+# Test 5.1: Denied tenant rejected
+result=$(run_psql "app_user.blocked_tenant" -c "SELECT 1" 2>&1)
+if echo "$result" | grep -qi "denied\|fatal\|error\|refused\|closed"; then
+  pass "5.1 Denied tenant — connection rejected"
+else
+  fail "5.1 Denied tenant — expected rejection, got: $result"
+fi
+
+# Test 5.2: Allowed tenant works
+result=$(run_psql "app_user.tenant_a" -c "SELECT 1")
+if echo "$result" | grep -q "1"; then
+  pass "5.2 Allowed tenant — connection succeeds"
+else
+  fail "5.2 Allowed tenant — unexpected result: $result"
+fi
+
+# Test 5.3: Connection limit enforced
+# Start two long-running connections
+PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PGVPD_PORT -U "app_user.tenant_a" -d $PG_DB \
+  -c "SELECT pg_sleep(5)" > /dev/null 2>&1 &
+BG_PID1=$!
+sleep 0.3
+PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PGVPD_PORT -U "app_user.tenant_a" -d $PG_DB \
+  -c "SELECT pg_sleep(5)" > /dev/null 2>&1 &
+BG_PID2=$!
+sleep 0.3
+
+# Third should fail (limit is 2)
+result=$(run_psql "app_user.tenant_a" -c "SELECT 1" 2>&1)
+if echo "$result" | grep -qi "limit\|fatal\|error\|refused\|closed"; then
+  pass "5.3 Connection limit — third connection rejected"
+else
+  fail "5.3 Connection limit — expected rejection, got: $result"
+fi
+
+# Cleanup background connections
+kill $BG_PID1 2>/dev/null || true
+kill $BG_PID2 2>/dev/null || true
+wait $BG_PID1 2>/dev/null || true
+wait $BG_PID2 2>/dev/null || true
+sleep 0.3
+
+# Test 5.4: Connection limit is per-tenant
+PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PGVPD_PORT -U "app_user.tenant_a" -d $PG_DB \
+  -c "SELECT pg_sleep(5)" > /dev/null 2>&1 &
+BG_PID1=$!
+PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PGVPD_PORT -U "app_user.tenant_a" -d $PG_DB \
+  -c "SELECT pg_sleep(5)" > /dev/null 2>&1 &
+BG_PID2=$!
+sleep 0.3
+
+# tenant_b should succeed even though tenant_a is at limit
+result=$(run_psql "app_user.tenant_b" -c "SELECT 1")
+if echo "$result" | grep -q "1"; then
+  pass "5.4 Per-tenant limit — tenant_b succeeds while tenant_a at limit"
+else
+  fail "5.4 Per-tenant limit — unexpected result: $result"
+fi
+
+kill $BG_PID1 2>/dev/null || true
+kill $BG_PID2 2>/dev/null || true
+wait $BG_PID1 2>/dev/null || true
+wait $BG_PID2 2>/dev/null || true
+sleep 0.5
+
+# Test 5.5: Query timeout
+# pg_sleep(10) should be killed by the 3-second idle timeout
+result=$(run_psql "app_user.tenant_a" -c "SELECT pg_sleep(10)" 2>&1)
+if echo "$result" | grep -qi "timeout\|fatal\|error\|closed\|server closed"; then
+  pass "5.5 Query timeout — long query terminated"
+else
+  fail "5.5 Query timeout — expected timeout, got: $result"
+fi
+
+stop_pgvpd
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 
