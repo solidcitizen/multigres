@@ -118,6 +118,10 @@ pub struct Cli {
     /// Seconds to wait for a connection when pool is full
     #[arg(long)]
     pub pool_checkout_timeout: Option<u64>,
+
+    /// Path to context resolver TOML file
+    #[arg(long)]
+    pub resolvers: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +148,7 @@ pub struct Config {
     pub upstream_password: Option<String>,
     pub pool_idle_timeout: u64,
     pub pool_checkout_timeout: u64,
+    pub resolvers: Option<String>,
 }
 
 impl Default for Config {
@@ -171,6 +176,7 @@ impl Default for Config {
             upstream_password: None,
             pool_idle_timeout: 300,
             pool_checkout_timeout: 5,
+            resolvers: None,
         }
     }
 }
@@ -259,6 +265,9 @@ impl Config {
         if let Some(v) = cli.pool_checkout_timeout {
             config.pool_checkout_timeout = v;
         }
+        if let Some(v) = cli.resolvers {
+            config.resolvers = Some(v);
+        }
 
         config
     }
@@ -282,6 +291,11 @@ impl Config {
             }
             if self.pool_size == 0 {
                 return Err("pool_size must be > 0".into());
+            }
+        }
+        if let Some(ref path) = self.resolvers {
+            if !std::path::Path::new(path).exists() {
+                return Err(format!("resolvers file not found: {}", path));
             }
         }
         Ok(())
@@ -372,6 +386,7 @@ fn apply_config_file(config: &mut Config, content: &str) {
                     config.pool_checkout_timeout = v;
                 }
             }
+            "resolvers" => config.resolvers = Some(value),
             _ => {}
         }
     }
@@ -457,6 +472,9 @@ fn apply_env(config: &mut Config) {
         if let Ok(t) = v.parse() {
             config.pool_checkout_timeout = t;
         }
+    }
+    if let Ok(v) = std::env::var("PGVPD_RESOLVERS") {
+        config.resolvers = Some(v);
     }
 }
 
