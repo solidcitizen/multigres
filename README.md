@@ -163,6 +163,7 @@ superuser_bypass = postgres
 | `pool_idle_timeout` | 300 | `PGVPD_POOL_IDLE_TIMEOUT` | Seconds idle before pooled connection is closed |
 | `pool_checkout_timeout` | 5 | `PGVPD_POOL_CHECKOUT_TIMEOUT` | Seconds to wait when pool is full |
 | `resolvers` | — | `PGVPD_RESOLVERS` | Path to context resolver TOML file |
+| `set_role` | *(login user)* | `PGVPD_SET_ROLE` | Override SET ROLE target (e.g., `authenticated`) |
 | `admin_port` | *(disabled)* | `PGVPD_ADMIN_PORT` | HTTP port for admin API (health, metrics, status) |
 
 Configuration is loaded in priority order: defaults → config file → environment variables → CLI flags.

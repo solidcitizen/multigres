@@ -126,6 +126,10 @@ pub struct Cli {
     /// HTTP port for admin API (health, metrics, status)
     #[arg(long)]
     pub admin_port: Option<u16>,
+
+    /// Override SET ROLE target (default: use rewritten username)
+    #[arg(long)]
+    pub set_role: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +158,7 @@ pub struct Config {
     pub pool_checkout_timeout: u64,
     pub resolvers: Option<String>,
     pub admin_port: Option<u16>,
+    pub set_role: Option<String>,
 }
 
 impl Default for Config {
@@ -183,6 +188,7 @@ impl Default for Config {
             pool_checkout_timeout: 5,
             resolvers: None,
             admin_port: None,
+            set_role: None,
         }
     }
 }
@@ -276,6 +282,9 @@ impl Config {
         }
         if let Some(v) = cli.admin_port {
             config.admin_port = Some(v);
+        }
+        if let Some(v) = cli.set_role {
+            config.set_role = Some(v);
         }
 
         config
@@ -401,6 +410,7 @@ fn apply_config_file(config: &mut Config, content: &str) {
                     config.admin_port = Some(v);
                 }
             }
+            "set_role" => config.set_role = Some(value),
             _ => {}
         }
     }
@@ -494,6 +504,9 @@ fn apply_env(config: &mut Config) {
         if let Ok(p) = v.parse() {
             config.admin_port = Some(p);
         }
+    }
+    if let Ok(v) = std::env::var("PGVPD_SET_ROLE") {
+        config.set_role = Some(v);
     }
 }
 
