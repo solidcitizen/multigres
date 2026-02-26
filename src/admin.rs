@@ -137,6 +137,16 @@ async fn metrics(State(state): State<AdminState>) -> Response {
         }
     }
 
+    // Tenant isolation metrics
+    out.push_str("# HELP pgvpd_tenant_rejected_total Tenant connections rejected.\n");
+    out.push_str("# TYPE pgvpd_tenant_rejected_total counter\n");
+    push_metric(&mut out, "pgvpd_tenant_rejected_total", r#"reason="deny""#, m.tenant_rejected_deny.load(Ordering::Relaxed));
+    push_metric(&mut out, "pgvpd_tenant_rejected_total", r#"reason="limit""#, m.tenant_rejected_limit.load(Ordering::Relaxed));
+    push_metric(&mut out, "pgvpd_tenant_rejected_total", r#"reason="rate""#, m.tenant_rejected_rate.load(Ordering::Relaxed));
+    out.push_str("# HELP pgvpd_tenant_timeouts_total Tenant query timeouts.\n");
+    out.push_str("# TYPE pgvpd_tenant_timeouts_total counter\n");
+    push_metric(&mut out, "pgvpd_tenant_timeouts_total", "", m.tenant_timeouts.load(Ordering::Relaxed));
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
@@ -221,6 +231,14 @@ async fn status(State(state): State<AdminState>) -> Response {
         json.push_str("    ");
     }
     json.push_str("]\n");
+    json.push_str("  },\n");
+
+    // Tenant isolation
+    json.push_str("  \"tenant\": {\n");
+    json.push_str(&format!("    \"rejected_deny\": {},\n", m.tenant_rejected_deny.load(Ordering::Relaxed)));
+    json.push_str(&format!("    \"rejected_limit\": {},\n", m.tenant_rejected_limit.load(Ordering::Relaxed)));
+    json.push_str(&format!("    \"rejected_rate\": {},\n", m.tenant_rejected_rate.load(Ordering::Relaxed)));
+    json.push_str(&format!("    \"timeouts\": {}\n", m.tenant_timeouts.load(Ordering::Relaxed)));
     json.push_str("  }\n");
 
     json.push_str("}\n");
