@@ -32,6 +32,9 @@ pub mod backend {
     pub const READY_FOR_QUERY: u8 = b'Z';
     pub const COMMAND_COMPLETE: u8 = b'C';
     pub const ERROR_RESPONSE: u8 = b'E';
+    pub const ROW_DESCRIPTION: u8 = b'T';
+    pub const DATA_ROW: u8 = b'D';
+    pub const EMPTY_QUERY_RESPONSE: u8 = b'I';
 }
 
 /// Authentication subtypes
@@ -114,6 +117,18 @@ impl BackendMessage {
     /// Is this BackendKeyData?
     pub fn is_backend_key_data(&self) -> bool {
         self.msg_type == backend::BACKEND_KEY_DATA
+    }
+
+    /// Is this RowDescription?
+    #[allow(dead_code)]
+    pub fn is_row_description(&self) -> bool {
+        self.msg_type == backend::ROW_DESCRIPTION
+    }
+
+    /// Is this DataRow?
+    #[allow(dead_code)]
+    pub fn is_data_row(&self) -> bool {
+        self.msg_type == backend::DATA_ROW
     }
 
     /// Return the auth subtype (e.g. OK=0, CLEARTEXT=3, MD5=5, SASL=10).
@@ -410,6 +425,7 @@ pub fn build_sasl_response(data: &[u8]) -> BytesMut {
 
 /// Escape a value as a SQL single-quoted literal.
 /// Rejects characters that have no business in a tenant ID.
+#[allow(dead_code)]
 pub fn escape_literal(value: &str) -> io::Result<String> {
     if !value
         .chars()
@@ -421,6 +437,15 @@ pub fn escape_literal(value: &str) -> io::Result<String> {
         ));
     }
     Ok(format!("'{}'", value.replace('\'', "''")))
+}
+
+/// Escape a value as a SQL single-quoted literal for SET commands.
+///
+/// Unlike `escape_literal()` which restricts characters (for untrusted tenant IDs),
+/// this allows any content (resolver results come from the database and may contain
+/// array literals like `{a,b,c}`, commas, spaces, etc.). Defense is quote-doubling only.
+pub fn escape_set_value(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Quote an identifier (double-quoted).

@@ -1,0 +1,72 @@
+# ──────────────────────────────────────────────────────────────
+# pgvpd Context Resolvers
+# ──────────────────────────────────────────────────────────────
+# Each [[resolver]] block defines a SQL query that runs post-auth
+# to derive session variables from database state.
+#
+# Resolvers execute in dependency order. Each can reference results
+# from prior resolvers via the `params` bind list.
+#
+# Fields:
+#   name        Unique name for this resolver
+#   query       SQL query with $1, $2, ... bind parameters
+#   params      List of context variable names to bind as parameters
+#   inject      Map of { "session_var" = "column_name" } to inject
+#   required    If true, no rows = connection terminated (default: false)
+#   depends_on  List of resolver names that must run first
+#   cache_ttl   Seconds to cache results (0 = no caching, default: 0)
+#
+# Referenced from pgvpd.conf via:
+#   resolvers = resolvers.toml
+# ──────────────────────────────────────────────────────────────
+
+# ─── Step 1: Resolve org membership from user ID ─────────────
+
+[[resolver]]
+name = "org_membership"
+query = """
+  SELECT org_id::text, role
+  FROM org_memberships
+  WHERE user_id = $1::uuid AND is_active = true
+  LIMIT 1
+"""
+params = ["app.user_id"]
+inject = { "app.org_id" = "org_id", "app.org_role" = "role" }
+required = false
+cache_ttl = 300
+
+# ─── Step 2: Resolve team memberships ────────────────────────
+
+[[resolver]]
+name = "team_memberships"
+query = """
+  SELECT array_agg(tm.team_id)::text AS team_ids
+  FROM team_memberships tm
+  JOIN teams t ON t.id = tm.team_id
+  WHERE tm.user_id = $1::uuid
+    AND t.org_id = $2::uuid
+    AND t.is_active = true
+"""
+params = ["app.user_id", "app.org_id"]
+inject = { "app.team_ids" = "team_ids" }
+required = false
+depends_on = ["org_membership"]
+cache_ttl = 300
+
+# ─── Step 3: Resolve case grants (ACL) ──────────────────────
+
+[[resolver]]
+name = "case_grants"
+query = """
+  SELECT array_agg(DISTINCT case_id)::text AS granted_case_ids
+  FROM (
+    SELECT case_id FROM case_user_access WHERE user_id = $1::uuid
+    UNION
+    SELECT case_id FROM case_team_access WHERE team_id = ANY($2::uuid[])
+  ) grants
+"""
+params = ["app.user_id", "app.team_ids"]
+inject = { "app.granted_case_ids" = "granted_case_ids" }
+required = false
+depends_on = ["team_memberships"]
+cache_ttl = 60

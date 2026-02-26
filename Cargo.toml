@@ -1,6 +1,6 @@
 [package]
 name = "pgvpd"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Virtual Private Database for PostgreSQL — tenant isolation at the connection level"
 license = "MIT"
@@ -21,3 +21,5 @@ pbkdf2 = "0.12"
 base64 = "0.22"
 md-5 = "0.10"
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

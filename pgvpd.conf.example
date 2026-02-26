@@ -78,6 +78,14 @@
 # Active queries (transparent pipe) are not affected.
 # handshake_timeout = 30
 
+# ─── Context Resolvers ───────────────────────────────────────
+#
+# Path to a TOML file defining context resolvers.
+# Resolvers are SQL queries that run after authentication to derive
+# additional session variables from database state (org memberships,
+# team grants, ACLs). See resolvers.toml.example for format.
+# resolvers = resolvers.toml
+
 # ─── Connection Pooling ──────────────────────────────────────
 #
 # Session pooling reuses upstream connections across clients.
