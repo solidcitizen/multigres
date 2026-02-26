@@ -25,6 +25,22 @@ run as a superuser and return **all tenants' data**. Every team hand-rolls
 the same middleware, connection-pinning, and AsyncLocalStorage plumbing.
 The application becomes the security boundary — and applications make mistakes.
 
+ORMs make this worse. They treat database connections as fungible resources
+and assume a single privileged role — exactly the opposite of what RLS
+requires. The moment you use Drizzle, Prisma, or TypeORM with a standard
+connection pool, every query runs in the same security context. Setting
+per-request session variables requires manual connection pinning that the
+ORM wasn't designed for, and a single missed code path fails open.
+
+Platforms like Supabase work around this by routing queries through a
+REST/GraphQL gateway that sets RLS context per request. But this means
+giving up the ORM entirely — you query through the gateway's API, not
+SQL. You lose joins, transactions, migrations, and the full
+expressiveness of Postgres. You also inherit the gateway's limitations:
+response size caps, restricted query patterns, and another service in the
+critical path. The database has a policy engine; you shouldn't need a
+middleware layer to use it.
+
 ## The Solution
 
 Encode the tenant in the username. Pgvpd handles the rest.
