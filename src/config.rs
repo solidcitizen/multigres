@@ -130,6 +130,26 @@ pub struct Cli {
     /// Override SET ROLE target (default: use rewritten username)
     #[arg(long)]
     pub set_role: Option<String>,
+
+    /// Comma-separated tenant allow list (only these tenants may connect)
+    #[arg(long)]
+    pub tenant_allow: Option<String>,
+
+    /// Comma-separated tenant deny list (these tenants are rejected)
+    #[arg(long)]
+    pub tenant_deny: Option<String>,
+
+    /// Max concurrent connections per tenant
+    #[arg(long)]
+    pub tenant_max_connections: Option<u32>,
+
+    /// Max new connections per tenant per second
+    #[arg(long)]
+    pub tenant_rate_limit: Option<u32>,
+
+    /// Seconds of inactivity before tenant connection is terminated
+    #[arg(long)]
+    pub tenant_query_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +179,11 @@ pub struct Config {
     pub resolvers: Option<String>,
     pub admin_port: Option<u16>,
     pub set_role: Option<String>,
+    pub tenant_allow: Option<Vec<String>>,
+    pub tenant_deny: Option<Vec<String>>,
+    pub tenant_max_connections: Option<u32>,
+    pub tenant_rate_limit: Option<u32>,
+    pub tenant_query_timeout: Option<u64>,
 }
 
 impl Default for Config {
@@ -189,6 +214,11 @@ impl Default for Config {
             resolvers: None,
             admin_port: None,
             set_role: None,
+            tenant_allow: None,
+            tenant_deny: None,
+            tenant_max_connections: None,
+            tenant_rate_limit: None,
+            tenant_query_timeout: None,
         }
     }
 }
@@ -286,6 +316,21 @@ impl Config {
         if let Some(v) = cli.set_role {
             config.set_role = Some(v);
         }
+        if let Some(v) = cli.tenant_allow {
+            config.tenant_allow = Some(v.split(',').map(|s| s.trim().to_string()).collect());
+        }
+        if let Some(v) = cli.tenant_deny {
+            config.tenant_deny = Some(v.split(',').map(|s| s.trim().to_string()).collect());
+        }
+        if let Some(v) = cli.tenant_max_connections {
+            config.tenant_max_connections = Some(v);
+        }
+        if let Some(v) = cli.tenant_rate_limit {
+            config.tenant_rate_limit = Some(v);
+        }
+        if let Some(v) = cli.tenant_query_timeout {
+            config.tenant_query_timeout = Some(v);
+        }
 
         config
     }
@@ -316,7 +361,18 @@ impl Config {
                 return Err(format!("resolvers file not found: {}", path));
             }
         }
+        if self.tenant_allow.is_some() && self.tenant_deny.is_some() {
+            return Err("tenant_allow and tenant_deny cannot both be set".into());
+        }
         Ok(())
+    }
+
+    /// Returns true if any tenant isolation feature is configured.
+    pub fn has_tenant_limits(&self) -> bool {
+        self.tenant_allow.is_some()
+            || self.tenant_deny.is_some()
+            || self.tenant_max_connections.is_some()
+            || self.tenant_rate_limit.is_some()
     }
 }
 
@@ -411,6 +467,27 @@ fn apply_config_file(config: &mut Config, content: &str) {
                 }
             }
             "set_role" => config.set_role = Some(value),
+            "tenant_allow" => {
+                config.tenant_allow = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+            }
+            "tenant_deny" => {
+                config.tenant_deny = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+            }
+            "tenant_max_connections" => {
+                if let Ok(v) = value.parse() {
+                    config.tenant_max_connections = Some(v);
+                }
+            }
+            "tenant_rate_limit" => {
+                if let Ok(v) = value.parse() {
+                    config.tenant_rate_limit = Some(v);
+                }
+            }
+            "tenant_query_timeout" => {
+                if let Ok(v) = value.parse() {
+                    config.tenant_query_timeout = Some(v);
+                }
+            }
             _ => {}
         }
     }
@@ -507,6 +584,27 @@ fn apply_env(config: &mut Config) {
     }
     if let Ok(v) = std::env::var("PGVPD_SET_ROLE") {
         config.set_role = Some(v);
+    }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_ALLOW") {
+        config.tenant_allow = Some(v.split(',').map(|s| s.trim().to_string()).collect());
+    }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_DENY") {
+        config.tenant_deny = Some(v.split(',').map(|s| s.trim().to_string()).collect());
+    }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_MAX_CONNECTIONS") {
+        if let Ok(n) = v.parse() {
+            config.tenant_max_connections = Some(n);
+        }
+    }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_RATE_LIMIT") {
+        if let Ok(n) = v.parse() {
+            config.tenant_rate_limit = Some(n);
+        }
+    }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_QUERY_TIMEOUT") {
+        if let Ok(n) = v.parse() {
+            config.tenant_query_timeout = Some(n);
+        }
     }
 }
 

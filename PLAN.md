@@ -93,7 +93,7 @@ const contacts = await db.select().from(contactMaster);
 
 ## Architecture
 
-### Current Architecture (v0.5)
+### Current Architecture (v0.6)
 
 Written in Rust with [tokio](https://tokio.rs/) for async I/O. Single static
 binary, no runtime dependencies.
@@ -139,6 +139,7 @@ Components:
 - `src/config.rs` — Configuration (file, env vars, CLI flags via clap)
 - `src/stream.rs` — Plain/TLS stream abstraction
 - `src/tls.rs` — TLS configuration builders
+- `src/tenant.rs` — Per-tenant isolation (allow/deny, connection limits, rate limiting)
 - `src/admin.rs` — Admin HTTP API (health, metrics, status)
 - `src/metrics.rs` — Shared atomic counters for observability
 - `src/main.rs` — Entry point, tracing setup
@@ -231,11 +232,13 @@ RFC: `docs/rfcs/rfc-context-resolvers.md`
 - **Pool metrics**: checkouts, reuses, creates, checkins, discards, timeouts; per-bucket total/idle
 - **Resolver metrics**: cache hits/misses, per-resolver executions/errors, cache size
 
-### v0.6 — Advanced Isolation
-- Per-tenant connection limits
-- Per-tenant rate limiting
-- Query timeout per tenant
-- Tenant allow/deny lists
+### v0.6 — Advanced Isolation ✓
+- **Tenant allow/deny lists**: `tenant_allow` / `tenant_deny` config — reject connections at handshake before any upstream work
+- **Per-tenant connection limits**: `tenant_max_connections` — RAII guard (TenantGuard) ensures count is always decremented on connection end
+- **Per-tenant rate limiting**: `tenant_rate_limit` — fixed-window (1-second) rate limiter per tenant
+- **Query timeout**: `tenant_query_timeout` — idle timeout in pool mode (resets on data transfer), connection lifetime timeout in passthrough mode
+- **TenantRegistry**: shared per-tenant state with lazy creation, no new crate dependencies
+- **Metrics**: `pgvpd_tenant_rejected_total{reason=deny|limit|rate}`, `pgvpd_tenant_timeouts_total`
 
 ### v0.7 — SQL Helpers + Convenience
 - `pgvpd_context()`, `pgvpd_context_array()`, `pgvpd_context_contains()`

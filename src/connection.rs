@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::auth;
 use crate::config::{Config, PoolMode};
+use crate::metrics::Metrics;
 use crate::pool::{Pool, PoolKey};
 use crate::protocol::{
     build_error_response, build_query_message, build_startup_message, escape_set_value,
@@ -25,6 +26,7 @@ use crate::protocol::{
 };
 use crate::resolver::ResolverEngine;
 use crate::stream::{ClientStream, UpstreamStream};
+use crate::tenant::{TenantGuard, TenantRegistry};
 use crate::tls::parse_server_name;
 
 /// Result of the handshake phase.
@@ -48,6 +50,8 @@ pub async fn handle_connection(
     upstream_tls: Option<Arc<ClientConfig>>,
     pool: Option<Arc<Pool>>,
     resolver_engine: Option<Arc<ResolverEngine>>,
+    tenant_registry: Option<Arc<TenantRegistry>>,
+    config_metrics: Arc<Metrics>,
     conn_id: u64,
 ) {
     let peer = client
@@ -58,7 +62,7 @@ pub async fn handle_connection(
 
     let timeout = Duration::from_secs(config.handshake_timeout_secs);
 
-    let result = match tokio::time::timeout(
+    let (result, _tenant_guard) = match tokio::time::timeout(
         timeout,
         handshake(
             &mut client,
@@ -66,6 +70,7 @@ pub async fn handle_connection(
             &upstream_tls,
             &pool,
             &resolver_engine,
+            &tenant_registry,
             conn_id,
         ),
     )
@@ -88,12 +93,28 @@ pub async fn handle_connection(
             return;
         }
     };
+    // _tenant_guard lives here until handle_connection returns,
+    // decrementing the per-tenant active connection count on drop.
+
+    let query_timeout = config.tenant_query_timeout.map(Duration::from_secs);
 
     match result {
         HandshakeResult::Done => {}
         HandshakeResult::Passthrough(mut server) => {
             debug!(conn_id, "transparent pipe");
-            if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut server).await {
+            let result = if let Some(timeout) = query_timeout {
+                match tokio::time::timeout(timeout, tokio::io::copy_bidirectional(&mut client, &mut server)).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        warn!(conn_id, "query timeout (passthrough)");
+                        Metrics::inc(&config_metrics.tenant_timeouts);
+                        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "tenant query timeout"))
+                    }
+                }
+            } else {
+                tokio::io::copy_bidirectional(&mut client, &mut server).await
+            };
+            if let Err(e) = result {
                 debug!(conn_id, error = %e, "connection ended");
             }
         }
@@ -103,7 +124,7 @@ pub async fn handle_connection(
             pool,
         } => {
             debug!(conn_id, "transparent pipe (pooled)");
-            if let Err(e) = pipe_pooled(&mut client, &mut stream, conn_id).await {
+            if let Err(e) = pipe_pooled(&mut client, &mut stream, conn_id, query_timeout, &config_metrics).await {
                 debug!(conn_id, error = %e, "connection ended");
             }
             pool.checkin(key, stream, conn_id).await;
@@ -115,13 +136,22 @@ pub async fn handle_connection(
 ///
 /// Unlike `copy_bidirectional`, this intercepts the Postgres Terminate message
 /// ('X') from the client so the upstream connection stays alive for pool reuse.
+/// If `query_timeout` is set, the connection is terminated after that many seconds
+/// of inactivity (no data in either direction).
 async fn pipe_pooled(
     client: &mut ClientStream,
     server: &mut UpstreamStream,
     conn_id: u64,
+    query_timeout: Option<Duration>,
+    metrics: &Metrics,
 ) -> std::io::Result<()> {
+    use std::pin::pin;
+    use tokio::time::Instant;
+
     let mut client_buf = BytesMut::with_capacity(8192);
     let mut server_buf = BytesMut::with_capacity(8192);
+    let idle_timeout = query_timeout.unwrap_or(Duration::from_secs(86400 * 365));
+    let mut deadline = pin!(tokio::time::sleep(idle_timeout));
 
     loop {
         tokio::select! {
@@ -135,6 +165,7 @@ async fn pipe_pooled(
                     debug!(conn_id, "client sent Terminate — preserving upstream");
                     return Ok(());
                 }
+                deadline.as_mut().reset(Instant::now() + idle_timeout);
             }
             result = server.read_buf(&mut server_buf) => {
                 let n = result?;
@@ -146,6 +177,15 @@ async fn pipe_pooled(
                 }
                 client.write_all(&server_buf).await?;
                 server_buf.clear();
+                deadline.as_mut().reset(Instant::now() + idle_timeout);
+            }
+            _ = &mut deadline, if query_timeout.is_some() => {
+                warn!(conn_id, "query timeout (pooled)");
+                Metrics::inc(&metrics.tenant_timeouts);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "tenant query timeout",
+                ));
             }
         }
     }
@@ -196,8 +236,9 @@ async fn handshake(
     upstream_tls: &Option<Arc<ClientConfig>>,
     pool: &Option<Arc<Pool>>,
     resolver_engine: &Option<Arc<ResolverEngine>>,
+    tenant_registry: &Option<Arc<TenantRegistry>>,
     conn_id: u64,
-) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(HandshakeResult, Option<TenantGuard>), Box<dyn std::error::Error + Send + Sync>> {
     // ─── Phase 1: Read StartupMessage ───────────────────────────────────
 
     let mut buf = BytesMut::with_capacity(1024);
@@ -213,7 +254,7 @@ async fn handshake(
             }
             Some(StartupType::CancelRequest) => {
                 debug!(conn_id, "cancel request — closing");
-                return Ok(HandshakeResult::Done);
+                return Ok((HandshakeResult::Done, None));
             }
             Some(StartupType::Startup(s)) => break s,
             None => continue,
@@ -223,7 +264,7 @@ async fn handshake(
     let raw_user = startup.params.get("user").cloned().unwrap_or_default();
     if raw_user.is_empty() {
         send_error(client, "FATAL", "08004", "no username in StartupMessage").await;
-        return Ok(HandshakeResult::Done);
+        return Ok((HandshakeResult::Done, None));
     }
 
     let database = startup
@@ -242,7 +283,7 @@ async fn handshake(
         if !buf.is_empty() {
             server.write_all(&buf).await?;
         }
-        return Ok(HandshakeResult::Passthrough(server));
+        return Ok((HandshakeResult::Passthrough(server), None));
     }
 
     // ─── Extract tenant context from username ───────────────────────────
@@ -260,7 +301,7 @@ async fn handshake(
                 ),
             )
             .await;
-            return Ok(HandshakeResult::Done);
+            return Ok((HandshakeResult::Done, None));
         }
     };
 
@@ -269,7 +310,7 @@ async fn handshake(
 
     if actual_user.is_empty() || tenant_payload.is_empty() {
         send_error(client, "FATAL", "28000", "empty role or context in username").await;
-        return Ok(HandshakeResult::Done);
+        return Ok((HandshakeResult::Done, None));
     }
 
     let context_values: Vec<&str> = if config.context_variables.len() > 1 {
@@ -290,12 +331,12 @@ async fn handshake(
             ),
         )
         .await;
-        return Ok(HandshakeResult::Done);
+        return Ok((HandshakeResult::Done, None));
     }
 
     if context_values.iter().any(|v| v.is_empty()) {
         send_error(client, "FATAL", "28000", "empty context value in username").await;
-        return Ok(HandshakeResult::Done);
+        return Ok((HandshakeResult::Done, None));
     }
 
     info!(
@@ -305,11 +346,29 @@ async fn handshake(
         "tenant connection"
     );
 
+    // ─── Tenant isolation checks ────────────────────────────────────────
+
+    let tenant_guard = if let Some(registry) = tenant_registry {
+        if let Err(msg) = registry.check_access(tenant_payload) {
+            send_error(client, "FATAL", "28000", &msg).await;
+            return Ok((HandshakeResult::Done, None));
+        }
+        match registry.acquire(tenant_payload).await {
+            Ok(guard) => Some(guard),
+            Err(msg) => {
+                send_error(client, "FATAL", "53300", &msg).await;
+                return Ok((HandshakeResult::Done, None));
+            }
+        }
+    } else {
+        None
+    };
+
     // ─── Branch: pool mode vs passthrough ───────────────────────────────
 
     if config.pool_mode == PoolMode::Session {
         if let Some(pool) = pool {
-            return handle_pooled(
+            let (result, _) = handle_pooled(
                 client,
                 config,
                 pool,
@@ -319,13 +378,14 @@ async fn handshake(
                 resolver_engine,
                 conn_id,
             )
-            .await;
+            .await?;
+            return Ok((result, tenant_guard));
         }
     }
 
     // ─── Passthrough: connect and relay auth ────────────────────────────
 
-    handle_passthrough(
+    let (result, _) = handle_passthrough(
         client,
         config,
         upstream_tls,
@@ -336,7 +396,8 @@ async fn handshake(
         resolver_engine,
         conn_id,
     )
-    .await
+    .await?;
+    Ok((result, tenant_guard))
 }
 
 /// Passthrough mode — connect to upstream, relay auth, resolve context, inject.
@@ -350,7 +411,7 @@ async fn handle_passthrough(
     context_values: &[&str],
     resolver_engine: &Option<Arc<ResolverEngine>>,
     conn_id: u64,
-) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(HandshakeResult, Option<TenantGuard>), Box<dyn std::error::Error + Send + Sync>> {
     let mut server = connect_upstream(config, upstream_tls).await?;
     debug!(
         conn_id,
@@ -438,7 +499,7 @@ async fn handle_passthrough(
         {
             error!(conn_id, error = %e, "resolver failed — terminating connection");
             send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
-            return Ok(HandshakeResult::Done);
+            return Ok((HandshakeResult::Done, None));
         }
     }
 
@@ -461,7 +522,7 @@ async fn handle_passthrough(
         client.write_all(&server_buf).await?;
     }
 
-    Ok(HandshakeResult::Passthrough(server))
+    Ok((HandshakeResult::Passthrough(server), None))
 }
 
 /// Pool mode — pgvpd authenticates client, checks out pooled connection,
@@ -475,13 +536,13 @@ async fn handle_pooled(
     context_values: &[&str],
     resolver_engine: &Option<Arc<ResolverEngine>>,
     conn_id: u64,
-) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(HandshakeResult, Option<TenantGuard>), Box<dyn std::error::Error + Send + Sync>> {
     // ─── Authenticate client ────────────────────────────────────────────
 
     let pool_password = config.pool_password.as_deref().unwrap_or("");
     if let Err(e) = auth::authenticate_client(client, pool_password, conn_id).await {
         send_error(client, "FATAL", "28P01", &e).await;
-        return Ok(HandshakeResult::Done);
+        return Ok((HandshakeResult::Done, None));
     }
 
     // ─── Checkout from pool ─────────────────────────────────────────────
@@ -501,7 +562,7 @@ async fn handle_pooled(
                 &format!("pool checkout failed: {e}"),
             )
             .await;
-            return Ok(HandshakeResult::Done);
+            return Ok((HandshakeResult::Done, None));
         }
     };
 
@@ -526,7 +587,7 @@ async fn handle_pooled(
                     &format!("DISCARD ALL failed: {}", msg.error_message()),
                 )
                 .await;
-                return Ok(HandshakeResult::Done);
+                return Ok((HandshakeResult::Done, None));
             }
             if msg.is_ready_for_query() {
                 done = true;
@@ -549,7 +610,7 @@ async fn handle_pooled(
         {
             error!(conn_id, error = %e, "resolver failed (pooled) — terminating");
             send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
-            return Ok(HandshakeResult::Done);
+            return Ok((HandshakeResult::Done, None));
         }
     }
 
@@ -588,7 +649,7 @@ async fn handle_pooled(
                     &format!("context injection failed: {}", msg.error_message()),
                 )
                 .await;
-                return Ok(HandshakeResult::Done);
+                return Ok((HandshakeResult::Done, None));
             }
             if msg.is_ready_for_query() {
                 done = true;
@@ -622,11 +683,11 @@ async fn handle_pooled(
         "context set (pooled)"
     );
 
-    Ok(HandshakeResult::Pooled {
+    Ok((HandshakeResult::Pooled {
         stream: server,
         key,
         pool: Arc::clone(pool),
-    })
+    }, None))
 }
 
 /// Build a context map from static (username-extracted) values.
