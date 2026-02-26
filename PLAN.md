@@ -93,12 +93,10 @@ const contacts = await db.select().from(contactMaster);
 
 ## Architecture
 
-### v0.1 — TCP Proxy (this release)
+### Current Architecture (v0.3)
 
 Written in Rust with [tokio](https://tokio.rs/) for async I/O. Single static
 binary, no runtime dependencies.
-
-Core proxy that handles the connection lifecycle:
 
 ```
 State Machine (per connection):
@@ -107,76 +105,126 @@ State Machine (per connection):
        │              Extract tenant from username
        │              Rewrite username
        ▼
-  AUTHENTICATING ──→ Proxy auth exchange bidirectionally
-       │              Relay SCRAM-SHA-256, MD5, cleartext
-       │              Detect AuthenticationOk
+  AUTHENTICATING ──→ Passthrough: relay auth exchange bidirectionally
+       │              Pool mode: pgvpd authenticates client (cleartext),
+       │              then authenticates to upstream (cleartext/MD5/SCRAM)
        ▼
   POST_AUTH ──────→ Forward ParameterStatus, BackendKeyData
        │              Buffer first ReadyForQuery
+       │              (Pool mode: checkout from pool, DISCARD ALL)
        ▼
   INJECTING ──────→ Send SET commands to server
        │              Consume server response
        │              Forward buffered ReadyForQuery to client
        ▼
   TRANSPARENT ────→ Zero-copy bidirectional pipe
-                      (tokio::io::copy_bidirectional)
+       │              (tokio::io::copy_bidirectional)
+       ▼
+  CLEANUP ────────→ Pool mode: ROLLBACK, DISCARD ALL, return to pool
 ```
 
 Components:
-- `src/protocol.rs` — Wire protocol parser (StartupMessage, backend messages,
-  SQL escaping, message builders)
+- `src/protocol.rs` — Wire protocol parser and message builders
 - `src/connection.rs` — Per-connection async state machine
-- `src/proxy.rs` — TCP listener, accepts and spawns per-connection tasks
+- `src/auth.rs` — Client-facing and upstream-facing authentication
+- `src/pool.rs` — Session connection pool with idle reaper
+- `src/proxy.rs` — TCP/TLS listener, pool creation, connection dispatch
 - `src/config.rs` — Configuration (file, env vars, CLI flags via clap)
+- `src/stream.rs` — Plain/TLS stream abstraction
+- `src/tls.rs` — TLS configuration builders
 - `src/main.rs` — Entry point, tracing setup
-- `sql/setup.sql` — Postgres-side setup (roles, functions, helpers)
 
-A TypeScript prototype (`prototype/`) validated the architecture before the
-Rust implementation.
+### Where we're going
 
-### SSL Handling (v0.1)
+pgvpd is evolving from a tenant isolation proxy into an **application security
+context engine** — the Postgres equivalent of Oracle's Real Application
+Security (RAS).
 
-Client-side SSL requests are denied with `'N'` — the client falls back to
-plaintext. This is fine for local development. TLS termination is planned for
-v0.2.
+The key insight from Oracle's VPD → RAS evolution: the database should resolve
+the user's security context, not the application. The application provides
+identity ("who is this user?"). The database determines access ("what can they
+see?"). Context resolvers (v0.4) implement this by running configurable SQL
+queries at connection time to build the full security context from database
+state.
 
-### Authentication (v0.1)
+```
+Today:    App provides identity + context → pgvpd injects → Postgres enforces
+v0.4:     App provides identity → pgvpd resolves context from DB → injects → Postgres enforces
+```
 
-All auth mechanisms (cleartext, MD5, SCRAM-SHA-256) are proxied transparently.
-Pgvpd doesn't inspect passwords — it relays the full auth exchange between
-client and server, including multi-round-trip SASL negotiations. The rewritten
-username in the StartupMessage determines which role the server authenticates
-against.
+This enables multi-dimensional RBAC (ownership + ACL grants + team membership +
+org roles) without the application being in the security path.
 
 ### Superuser Bypass
 
 Connections using a configured superuser username (e.g., `postgres`) are
-passed through without tenant extraction or context injection. This allows
-admin/migration tools to connect directly.
+passed through without tenant extraction, context injection, or pooling. This
+allows admin/migration tools to connect directly.
 
 ## Roadmap
 
-### v0.2 — TLS + Hardening
+### v0.1 — TCP Proxy ✓
+Core proxy: tenant extraction from username, auth relay, context injection,
+transparent pipe. Single binary, zero dependencies.
+
+### v0.2 — TLS + Hardening ✓
 - TLS termination (client → Pgvpd)
 - TLS origination (Pgvpd → upstream)
-- Connection timeout enforcement
-- Health check endpoint
+- Handshake timeout enforcement
 
-### v0.3 — Connection Pooling
-- Built-in connection pool (replace PgBouncer in the stack)
-- Per-tenant pool isolation options
-- Pool metrics and monitoring
+### v0.3 — Connection Pooling ✓
+- Session pooling (upstream connections reused across clients)
+- Pgvpd-side client auth (cleartext) + upstream auth (cleartext/MD5/SCRAM)
+- Pool checkout/checkin with connection reset
+- Idle connection reaper
+- Superuser bypass connections never pooled
 
-### v0.4 — Observability + Admin
+### v0.4 — Context Resolvers
+The architectural pivot from "tenant isolation proxy" to "application security
+context engine." Inspired by Oracle's evolution from VPD to Real Application
+Security (RAS): the database resolves the user's full security context at
+connection time, not the application.
+
+- **Resolver engine**: `[[resolver]]` config blocks — named SQL queries that
+  run post-auth to derive session variables from database state
+- **Dependency ordering**: resolvers chain (org_membership → team_memberships
+  → case_grants), each using results from prior resolvers as bind parameters
+- **Context caching**: resolved context cached in-process keyed by
+  `(resolver_name, input_params)` with configurable TTL — critical for pool
+  mode where re-resolving on every checkout is expensive
+- **Fail-closed semantics**: resolver error/timeout → connection terminated;
+  no rows → variable set to NULL (RLS matches nothing)
+- **Resolver-only mode**: username carries identity only (`app_user.user-uuid`),
+  all context (org, teams, grants, even role) comes from resolvers — the
+  endgame for full RAS equivalence
+
+This enables multi-dimensional RBAC:
+```
+user sees case IF:
+    case.creator_id = user_id              -- ownership
+    OR EXISTS direct_grant(user, case)      -- ACL
+    OR EXISTS team_grant(user_teams, case)  -- team membership
+    OR user.org_role = 'admin'             -- org-wide admin
+```
+
+RFC: `docs/rfcs/rfc-context-resolvers.md`
+
+### v0.5 — Observability + Admin
 - Admin API (HTTP) for runtime config, metrics, pool status
 - Per-tenant query counts, latency percentiles
 - Prometheus metrics endpoint
+- Resolver execution time metrics, cache hit rate
 
-### v0.5 — Advanced Isolation
-- Per-tenant rate limiting
+### v0.6 — Advanced Isolation
 - Per-tenant connection limits
+- Per-tenant rate limiting
 - Query timeout per tenant
 - Tenant allow/deny lists
+
+### v0.7 — SQL Helpers + Convenience
+- `pgvpd_context()`, `pgvpd_context_array()`, `pgvpd_context_contains()`
+- `pgvpd_protect_acl()` for multi-path RLS policies
+- Installable via `sql/helpers.sql`
 
 ### v1.0 — Production Ready
 - Battle-tested with real workloads
