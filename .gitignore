@@ -7,6 +7,7 @@ pgvpd.conf
 
 # Test artifacts
 tests/pgvpd-test.log
+tests/drizzle/node_modules
 
 # Project-specific
 why-we-are-here.txt
