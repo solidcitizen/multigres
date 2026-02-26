@@ -2,6 +2,13 @@
 
 All notable changes to pgvpd are documented here.
 
+## [1.0.0] — 2026-02-26
+
+### Released
+- First stable release
+- Published to crates.io and as prebuilt binaries (Linux x86_64/aarch64, macOS x86_64/aarch64)
+- 89 unit tests, 33 integration tests, CI on every push
+
 ## [0.9.0] — 2026-02-26
 
 ### Added

@@ -260,7 +260,7 @@ Unit tests for critical code paths that only have integration coverage today.
 - **Connection throughput benchmark** (`benches/throughput.rs`): passthrough latency vs direct connection
 - **README update**: CI badge, benchmark results, install-from-release instructions
 
-### v1.0 — Release
+### v1.0 — Release ✓
 Version bump + tag push. Release automation publishes binaries and the crate. After v0.8 (infrastructure) and v0.9 (hardening), v1.0 is a ceremony — the code has been running in production since v0.7.
 
 ## Design Principles
