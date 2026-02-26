@@ -8,8 +8,9 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
-use crate::config::Config;
+use crate::config::{Config, PoolMode};
 use crate::connection;
+use crate::pool::Pool;
 use crate::stream::ClientStream;
 use crate::tls;
 
@@ -36,6 +37,29 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             config.upstream_tls_verify,
             config.upstream_tls_ca.as_deref(),
         )?)
+    } else {
+        None
+    };
+
+    // ─── Connection pool (if configured) ────────────────────────────────
+
+    let config = Arc::new(config);
+
+    let pool: Option<Arc<Pool>> = if config.pool_mode == PoolMode::Session {
+        let pool = Arc::new(Pool::new(Arc::clone(&config), upstream_tls.clone()));
+        // Spawn idle reaper background task
+        let reaper_pool = Arc::clone(&pool);
+        tokio::spawn(async move {
+            reaper_pool.idle_reaper().await;
+        });
+        info!(
+            pool_mode = %config.pool_mode,
+            pool_size = config.pool_size,
+            idle_timeout = config.pool_idle_timeout,
+            checkout_timeout = config.pool_checkout_timeout,
+            "connection pool"
+        );
+        Some(pool)
     } else {
         None
     };
@@ -69,8 +93,6 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         "handshake timeout"
     );
 
-    let config = Arc::new(config);
-
     // ─── TLS listener (if configured) ───────────────────────────────────
 
     if let (Some(tls_port), Some(acceptor)) = (config.tls_port, tls_acceptor) {
@@ -80,6 +102,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
         let tls_config = Arc::clone(&config);
         let tls_upstream = upstream_tls.clone();
+        let tls_pool = pool.clone();
 
         tokio::spawn(async move {
             loop {
@@ -87,16 +110,16 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     Ok((socket, _)) => {
                         let config = Arc::clone(&tls_config);
                         let upstream = tls_upstream.clone();
+                        let pool = tls_pool.clone();
                         let acceptor = acceptor.clone();
                         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
                         tokio::spawn(async move {
-                            // TLS handshake in spawned task — doesn't block accept loop
                             match acceptor.accept(socket).await {
                                 Ok(tls_stream) => {
                                     let client = ClientStream::Tls(tls_stream);
                                     connection::handle_connection(
-                                        client, config, upstream, conn_id,
+                                        client, config, upstream, pool, conn_id,
                                     )
                                     .await;
                                 }
@@ -120,11 +143,12 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         let (socket, _) = plain_listener.accept().await?;
         let config = Arc::clone(&config);
         let upstream = upstream_tls.clone();
+        let pool = pool.clone();
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
         tokio::spawn(async move {
             let client = ClientStream::Plain(socket);
-            connection::handle_connection(client, config, upstream, conn_id).await;
+            connection::handle_connection(client, config, upstream, pool, conn_id).await;
         });
     }
 }

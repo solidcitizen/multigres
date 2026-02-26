@@ -78,6 +78,37 @@
 # Active queries (transparent pipe) are not affected.
 # handshake_timeout = 30
 
+# ─── Connection Pooling ──────────────────────────────────────
+#
+# Session pooling reuses upstream connections across clients.
+# In pool mode, pgvpd authenticates clients itself (cleartext)
+# and connects to upstream using upstream_password.
+#
+# Superuser bypass connections are never pooled.
+#
+# Pool key: (database, role) — all tenants sharing a role/db
+# reuse connections from the same bucket.
+
+# Pool mode: none (default, passthrough) or session (pooling)
+# pool_mode = none
+
+# Max upstream connections per (database, role)
+# pool_size = 20
+
+# Password clients must provide when pool_mode = session.
+# Required for session mode.
+# pool_password = changeme
+
+# Password pgvpd uses to authenticate to upstream Postgres.
+# Required for session mode.
+# upstream_password = changeme
+
+# Seconds an idle pooled connection lives before being closed.
+# pool_idle_timeout = 300
+
+# Seconds to wait for a connection when the pool is full.
+# pool_checkout_timeout = 5
+
 # ─── Logging ─────────────────────────────────────────────────
 
 # Log level: debug, info, warn, error

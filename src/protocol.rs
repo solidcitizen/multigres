@@ -37,6 +37,10 @@ pub mod backend {
 /// Authentication subtypes
 pub mod auth {
     pub const OK: i32 = 0;
+    pub const CLEARTEXT_PASSWORD: i32 = 3;
+    pub const MD5_PASSWORD: i32 = 5;
+    pub const SASL: i32 = 10;
+    pub const SASL_CONTINUE: i32 = 11;
     pub const SASL_FINAL: i32 = 12;
 }
 
@@ -105,6 +109,25 @@ impl BackendMessage {
     /// Is this ParameterStatus?
     pub fn is_parameter_status(&self) -> bool {
         self.msg_type == backend::PARAMETER_STATUS
+    }
+
+    /// Is this BackendKeyData?
+    pub fn is_backend_key_data(&self) -> bool {
+        self.msg_type == backend::BACKEND_KEY_DATA
+    }
+
+    /// Return the auth subtype (e.g. OK=0, CLEARTEXT=3, MD5=5, SASL=10).
+    /// Returns `None` if this isn't an Authentication message or payload is too short.
+    pub fn auth_subtype(&self) -> Option<i32> {
+        if self.msg_type != backend::AUTHENTICATION || self.payload.len() < 4 {
+            return None;
+        }
+        Some(i32::from_be_bytes([
+            self.payload[0],
+            self.payload[1],
+            self.payload[2],
+            self.payload[3],
+        ]))
     }
 
     /// Extract human-readable error message from an ErrorResponse.
@@ -301,6 +324,85 @@ pub fn build_error_response(severity: &str, sqlstate: &str, message: &str) -> By
     }
     buf.put_u8(0); // terminal null
 
+    buf
+}
+
+/// Build an AuthenticationCleartextPassword request (server → client).
+pub fn build_auth_cleartext_request() -> BytesMut {
+    // 'R' | int32 len(8) | int32 subtype(3)
+    let mut buf = BytesMut::with_capacity(9);
+    buf.put_u8(backend::AUTHENTICATION);
+    buf.put_i32(8); // length: 4 (len field) + 4 (subtype)
+    buf.put_i32(auth::CLEARTEXT_PASSWORD);
+    buf
+}
+
+/// Build an AuthenticationOk message (server → client).
+pub fn build_auth_ok() -> BytesMut {
+    let mut buf = BytesMut::with_capacity(9);
+    buf.put_u8(backend::AUTHENTICATION);
+    buf.put_i32(8);
+    buf.put_i32(auth::OK);
+    buf
+}
+
+/// Try to read a PasswordMessage ('p') from the client buffer.
+/// Returns the password string (without null terminator) or None if not enough data.
+pub fn try_read_password_message(buf: &mut BytesMut) -> Option<String> {
+    if buf.len() < 5 {
+        return None;
+    }
+    if buf[0] != b'p' {
+        return None;
+    }
+    let length = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+    let total = 1 + length;
+    if buf.len() < total {
+        return None;
+    }
+    // Password is between offset 5 and total-1 (strip null terminator)
+    let password_end = if total > 5 && buf[total - 1] == 0 {
+        total - 1
+    } else {
+        total
+    };
+    let password = String::from_utf8_lossy(&buf[5..password_end]).to_string();
+    buf.advance(total);
+    Some(password)
+}
+
+/// Build a PasswordMessage ('p') for sending to the server.
+pub fn build_password_message(password: &[u8]) -> BytesMut {
+    let msg_len = 4 + password.len() + 1; // length field + password + null
+    let mut buf = BytesMut::with_capacity(1 + msg_len);
+    buf.put_u8(b'p');
+    buf.put_i32(msg_len as i32);
+    buf.put_slice(password);
+    buf.put_u8(0);
+    buf
+}
+
+/// Build a SASLInitialResponse message ('p') with mechanism name and initial data.
+pub fn build_sasl_initial_response(mechanism: &str, data: &[u8]) -> BytesMut {
+    // 'p' | int32 len | mechanism\0 | int32 data_len | data
+    let msg_len = 4 + mechanism.len() + 1 + 4 + data.len();
+    let mut buf = BytesMut::with_capacity(1 + msg_len);
+    buf.put_u8(b'p');
+    buf.put_i32(msg_len as i32);
+    buf.put_slice(mechanism.as_bytes());
+    buf.put_u8(0);
+    buf.put_i32(data.len() as i32);
+    buf.put_slice(data);
+    buf
+}
+
+/// Build a SASLResponse message ('p') with response data.
+pub fn build_sasl_response(data: &[u8]) -> BytesMut {
+    let msg_len = 4 + data.len();
+    let mut buf = BytesMut::with_capacity(1 + msg_len);
+    buf.put_u8(b'p');
+    buf.put_i32(msg_len as i32);
+    buf.put_slice(data);
     buf
 }
 
