@@ -7,7 +7,7 @@
 //! upstream connection, resets + resolves + re-injects context, then enters
 //! the transparent pipe.
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use rustls::ClientConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -103,11 +103,89 @@ pub async fn handle_connection(
             pool,
         } => {
             debug!(conn_id, "transparent pipe (pooled)");
-            if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut stream).await {
+            if let Err(e) = pipe_pooled(&mut client, &mut stream, conn_id).await {
                 debug!(conn_id, error = %e, "connection ended");
             }
             pool.checkin(key, stream, conn_id).await;
         }
+    }
+}
+
+/// Bidirectional pipe for pooled connections.
+///
+/// Unlike `copy_bidirectional`, this intercepts the Postgres Terminate message
+/// ('X') from the client so the upstream connection stays alive for pool reuse.
+async fn pipe_pooled(
+    client: &mut ClientStream,
+    server: &mut UpstreamStream,
+    conn_id: u64,
+) -> std::io::Result<()> {
+    let mut client_buf = BytesMut::with_capacity(8192);
+    let mut server_buf = BytesMut::with_capacity(8192);
+
+    loop {
+        tokio::select! {
+            result = client.read_buf(&mut client_buf) => {
+                let n = result?;
+                if n == 0 {
+                    debug!(conn_id, "client EOF (no Terminate)");
+                    return Ok(());
+                }
+                if forward_client_messages(&mut client_buf, server).await? {
+                    debug!(conn_id, "client sent Terminate — preserving upstream");
+                    return Ok(());
+                }
+            }
+            result = server.read_buf(&mut server_buf) => {
+                let n = result?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "upstream closed unexpectedly",
+                    ));
+                }
+                client.write_all(&server_buf).await?;
+                server_buf.clear();
+            }
+        }
+    }
+}
+
+/// Forward complete frontend messages to server, stopping on Terminate ('X').
+///
+/// Returns `true` if Terminate was found (caller should stop piping).
+/// Leaves incomplete messages in the buffer for the next read.
+async fn forward_client_messages(
+    buf: &mut BytesMut,
+    server: &mut UpstreamStream,
+) -> std::io::Result<bool> {
+    loop {
+        if buf.len() < 5 {
+            return Ok(false);
+        }
+
+        let msg_type = buf[0];
+        let length = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        if length < 4 {
+            // Malformed framing — forward everything, let upstream handle it
+            server.write_all(buf).await?;
+            buf.clear();
+            return Ok(false);
+        }
+        let total = 1 + length as usize;
+
+        if buf.len() < total {
+            return Ok(false); // Incomplete message, wait for more data
+        }
+
+        if msg_type == b'X' {
+            // Terminate — consume but don't forward
+            buf.advance(total);
+            return Ok(true);
+        }
+
+        server.write_all(&buf[..total]).await?;
+        buf.advance(total);
     }
 }
 

@@ -151,35 +151,22 @@ impl Pool {
     /// Return a connection to the pool after use.
     /// Sends ROLLBACK; DISCARD ALL; to reset state, then pushes to idle.
     pub async fn checkin(&self, key: PoolKey, mut stream: UpstreamStream, conn_id: u64) {
-        // Reset the connection
-        let reset_sql = "ROLLBACK; DISCARD ALL;";
-        let query_msg = build_query_message(reset_sql);
-
-        if let Err(e) = stream.write_all(&query_msg).await {
-            warn!(conn_id, error = %e, "pool: checkin write failed, discarding");
-            self.decrement_total(&key).await;
-            return;
-        }
-
-        // Wait for ReadyForQuery
+        // Reset the connection in two steps:
+        // 1. ROLLBACK — ends any open transaction (no-op if idle)
+        // 2. DISCARD ALL — resets all session state
+        // These MUST be separate SimpleQuery messages because PostgreSQL
+        // wraps multi-statement queries in an implicit transaction, and
+        // DISCARD ALL refuses to run inside a transaction block.
         let mut buf = BytesMut::with_capacity(1024);
         let reset_timeout = Duration::from_secs(5);
 
         match tokio::time::timeout(reset_timeout, async {
-            loop {
-                if stream.read_buf(&mut buf).await.is_err() {
-                    return false;
-                }
-                while let Some(msg) = try_read_backend_message(&mut buf) {
-                    if msg.is_error_response() {
-                        warn!(conn_id, error = %msg.error_message(), "pool: reset error");
-                        return false;
-                    }
-                    if msg.is_ready_for_query() {
-                        return true;
-                    }
-                }
+            // Step 1: ROLLBACK
+            if !Self::send_and_drain(&mut stream, "ROLLBACK", &mut buf, conn_id).await {
+                return false;
             }
+            // Step 2: DISCARD ALL
+            Self::send_and_drain(&mut stream, "DISCARD ALL", &mut buf, conn_id).await
         })
         .await
         {
@@ -210,6 +197,35 @@ impl Pool {
             _ => {
                 warn!(conn_id, "pool: reset failed or timed out, discarding");
                 self.decrement_total(&key).await;
+            }
+        }
+    }
+
+    /// Send a SimpleQuery and drain responses until ReadyForQuery.
+    /// Returns false if the write fails, an ErrorResponse is received, or read fails.
+    async fn send_and_drain(
+        stream: &mut UpstreamStream,
+        sql: &str,
+        buf: &mut BytesMut,
+        conn_id: u64,
+    ) -> bool {
+        let msg = build_query_message(sql);
+        if stream.write_all(&msg).await.is_err() {
+            warn!(conn_id, sql, "pool: checkin write failed");
+            return false;
+        }
+        loop {
+            if stream.read_buf(buf).await.is_err() {
+                return false;
+            }
+            while let Some(msg) = try_read_backend_message(buf) {
+                if msg.is_error_response() {
+                    warn!(conn_id, error = %msg.error_message(), "pool: reset error");
+                    return false;
+                }
+                if msg.is_ready_for_query() {
+                    return true;
+                }
             }
         }
     }
