@@ -9,5 +9,8 @@ prototype/dist/
 pgvpd.conf
 .env
 
+# Test artifacts
+tests/pgvpd-test.log
+
 # Project-specific
 why-we-are-here.txt

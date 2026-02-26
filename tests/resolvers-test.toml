@@ -1,0 +1,12 @@
+[[resolver]]
+name = "org_membership"
+query = """
+  SELECT org_id::text, role
+  FROM org_memberships
+  WHERE user_id = $1::uuid AND is_active = true
+  LIMIT 1
+"""
+params = ["app.user_id"]
+inject = { "app.org_id" = "org_id", "app.org_role" = "role" }
+required = false
+cache_ttl = 60
