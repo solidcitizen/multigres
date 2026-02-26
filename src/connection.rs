@@ -2,6 +2,9 @@
 //!
 //! Async state machine managing a single client connection through:
 //!   WaitStartup → Authenticating → PostAuth → Injecting → Transparent
+//!
+//! In pool mode, pgvpd authenticates the client itself, checks out a pooled
+//! upstream connection, resets + re-injects context, then enters transparent pipe.
 
 use bytes::BytesMut;
 use rustls::ClientConfig;
@@ -11,7 +14,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
-use crate::config::Config;
+use crate::auth;
+use crate::config::{Config, PoolMode};
+use crate::pool::{Pool, PoolKey};
 use crate::protocol::{
     build_error_response, build_query_message, build_startup_message, escape_literal, quote_ident,
     try_read_backend_message, try_read_startup, StartupType, SSL_DENY,
@@ -19,11 +24,26 @@ use crate::protocol::{
 use crate::stream::{ClientStream, UpstreamStream};
 use crate::tls::parse_server_name;
 
+/// Result of the handshake phase.
+pub enum HandshakeResult {
+    /// Passthrough — direct upstream connection, no pooling.
+    Passthrough(UpstreamStream),
+    /// Pooled — connection checked out from pool, must be returned on disconnect.
+    Pooled {
+        stream: UpstreamStream,
+        key: PoolKey,
+        pool: Arc<Pool>,
+    },
+    /// Fully handled (cancel request, error, etc.) — nothing more to do.
+    Done,
+}
+
 /// Handle a single client connection through its full lifecycle.
 pub async fn handle_connection(
     mut client: ClientStream,
     config: Arc<Config>,
     upstream_tls: Option<Arc<ClientConfig>>,
+    pool: Option<Arc<Pool>>,
     conn_id: u64,
 ) {
     let peer = client
@@ -34,18 +54,13 @@ pub async fn handle_connection(
 
     let timeout = Duration::from_secs(config.handshake_timeout_secs);
 
-    // Handshake phases (startup + auth + injection) run under timeout.
-    // The transparent pipe runs without timeout so long queries work.
-    // Extract the server stream before awaiting copy_bidirectional so
-    // the non-Send error type doesn't live across the await boundary.
-    let server = match tokio::time::timeout(
+    let result = match tokio::time::timeout(
         timeout,
-        handshake(&mut client, &config, &upstream_tls, conn_id),
+        handshake(&mut client, &config, &upstream_tls, &pool, conn_id),
     )
     .await
     {
-        Ok(Ok(Some(server))) => server,
-        Ok(Ok(None)) => return,
+        Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             debug!(conn_id, error = %e, "connection ended");
             return;
@@ -63,22 +78,33 @@ pub async fn handle_connection(
         }
     };
 
-    let mut server = server;
-    debug!(conn_id, "transparent pipe");
-    if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut server).await {
-        debug!(conn_id, error = %e, "connection ended");
+    match result {
+        HandshakeResult::Done => {}
+        HandshakeResult::Passthrough(mut server) => {
+            debug!(conn_id, "transparent pipe");
+            if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut server).await {
+                debug!(conn_id, error = %e, "connection ended");
+            }
+        }
+        HandshakeResult::Pooled { mut stream, key, pool } => {
+            debug!(conn_id, "transparent pipe (pooled)");
+            if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut stream).await {
+                debug!(conn_id, error = %e, "connection ended");
+            }
+            // Return connection to pool
+            pool.checkin(key, stream, conn_id).await;
+        }
     }
 }
 
 /// Run the handshake phases: startup parsing, auth relay, context injection.
-/// Returns `Some(server)` if we should enter transparent pipe mode,
-/// or `None` if the connection was fully handled (cancel, superuser bypass).
 async fn handshake(
     client: &mut ClientStream,
     config: &Config,
     upstream_tls: &Option<Arc<ClientConfig>>,
+    pool: &Option<Arc<Pool>>,
     conn_id: u64,
-) -> Result<Option<UpstreamStream>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
     // ─── Phase 1: Read StartupMessage ───────────────────────────────────
 
     let mut buf = BytesMut::with_capacity(1024);
@@ -94,7 +120,7 @@ async fn handshake(
             }
             Some(StartupType::CancelRequest) => {
                 debug!(conn_id, "cancel request — closing");
-                return Ok(None);
+                return Ok(HandshakeResult::Done);
             }
             Some(StartupType::Startup(s)) => break s,
             None => continue,
@@ -104,7 +130,7 @@ async fn handshake(
     let raw_user = startup.params.get("user").cloned().unwrap_or_default();
     if raw_user.is_empty() {
         send_error(client, "FATAL", "08004", "no username in StartupMessage").await;
-        return Ok(None);
+        return Ok(HandshakeResult::Done);
     }
 
     let database = startup
@@ -113,7 +139,7 @@ async fn handshake(
         .cloned()
         .unwrap_or_else(|| "default".into());
 
-    // ─── Superuser bypass ───────────────────────────────────────────────
+    // ─── Superuser bypass (always passthrough, never pooled) ────────────
 
     if config.superuser_bypass.contains(&raw_user) {
         info!(conn_id, user = %raw_user, "superuser bypass");
@@ -123,8 +149,7 @@ async fn handshake(
         if !buf.is_empty() {
             server.write_all(&buf).await?;
         }
-        // Superuser bypass: go straight to transparent pipe
-        return Ok(Some(server));
+        return Ok(HandshakeResult::Passthrough(server));
     }
 
     // ─── Extract tenant context from username ───────────────────────────
@@ -142,7 +167,7 @@ async fn handshake(
                 ),
             )
             .await;
-            return Ok(None);
+            return Ok(HandshakeResult::Done);
         }
     };
 
@@ -151,7 +176,7 @@ async fn handshake(
 
     if actual_user.is_empty() || tenant_payload.is_empty() {
         send_error(client, "FATAL", "28000", "empty role or context in username").await;
-        return Ok(None);
+        return Ok(HandshakeResult::Done);
     }
 
     let context_values: Vec<&str> = if config.context_variables.len() > 1 {
@@ -172,12 +197,12 @@ async fn handshake(
             ),
         )
         .await;
-        return Ok(None);
+        return Ok(HandshakeResult::Done);
     }
 
     if context_values.iter().any(|v| v.is_empty()) {
         send_error(client, "FATAL", "28000", "empty context value in username").await;
-        return Ok(None);
+        return Ok(HandshakeResult::Done);
     }
 
     let context_summary: String = config
@@ -196,8 +221,52 @@ async fn handshake(
         "tenant connection"
     );
 
-    // ─── Phase 2: Connect to upstream ───────────────────────────────────
+    // ─── Branch: pool mode vs passthrough ───────────────────────────────
 
+    if config.pool_mode == PoolMode::Session {
+        if let Some(pool) = pool {
+            return handle_pooled(
+                client,
+                config,
+                pool,
+                actual_user,
+                &database,
+                &context_values,
+                &context_summary,
+                conn_id,
+            )
+            .await;
+        }
+    }
+
+    // ─── Passthrough: connect and relay auth ────────────────────────────
+
+    handle_passthrough(
+        client,
+        config,
+        upstream_tls,
+        &startup.params,
+        &mut buf,
+        actual_user,
+        &context_values,
+        &context_summary,
+        conn_id,
+    )
+    .await
+}
+
+/// Passthrough mode — connect to upstream, relay auth, inject context.
+async fn handle_passthrough(
+    client: &mut ClientStream,
+    config: &Config,
+    upstream_tls: &Option<Arc<ClientConfig>>,
+    startup_params: &std::collections::HashMap<String, String>,
+    buf: &mut BytesMut,
+    actual_user: &str,
+    context_values: &[&str],
+    context_summary: &str,
+    conn_id: u64,
+) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
     let mut server = connect_upstream(config, upstream_tls).await?;
     debug!(
         conn_id,
@@ -207,17 +276,17 @@ async fn handshake(
     );
 
     // Send rewritten StartupMessage
-    let mut rewritten_params = startup.params.clone();
+    let mut rewritten_params = startup_params.clone();
     rewritten_params.insert("user".into(), actual_user.to_string());
     let startup_msg = build_startup_message(&rewritten_params);
     server.write_all(&startup_msg).await?;
 
     if !buf.is_empty() {
-        server.write_all(&buf).await?;
+        server.write_all(buf).await?;
         buf.clear();
     }
 
-    // ─── Phase 3: Authentication ────────────────────────────────────────
+    // ─── Authentication relay ───────────────────────────────────────────
 
     let mut server_buf = BytesMut::with_capacity(4096);
     let mut auth_done = false;
@@ -247,7 +316,7 @@ async fn handshake(
         }
     }
 
-    // ─── Phase 4: Post-auth — wait for ReadyForQuery ────────────────────
+    // ─── Post-auth — wait for ReadyForQuery ─────────────────────────────
 
     let buffered_ready: BytesMut = loop {
         if server_buf.is_empty() {
@@ -274,8 +343,134 @@ async fn handshake(
         }
     };
 
-    // ─── Phase 5: Inject tenant context ─────────────────────────────────
+    // ─── Inject tenant context ──────────────────────────────────────────
 
+    inject_context(&mut server, &mut server_buf, client, config, actual_user, context_values, context_summary, &buffered_ready, conn_id).await?;
+
+    // Flush any remaining buffered server data
+    if !server_buf.is_empty() {
+        client.write_all(&server_buf).await?;
+    }
+
+    Ok(HandshakeResult::Passthrough(server))
+}
+
+/// Pool mode — pgvpd authenticates client, checks out pooled connection, injects context.
+async fn handle_pooled(
+    client: &mut ClientStream,
+    config: &Config,
+    pool: &Arc<Pool>,
+    actual_user: &str,
+    database: &str,
+    context_values: &[&str],
+    context_summary: &str,
+    conn_id: u64,
+) -> Result<HandshakeResult, Box<dyn std::error::Error + Send + Sync>> {
+    // ─── Authenticate client ────────────────────────────────────────────
+
+    let pool_password = config.pool_password.as_deref().unwrap_or("");
+    if let Err(e) = auth::authenticate_client(client, pool_password, conn_id).await {
+        send_error(client, "FATAL", "28P01", &e).await;
+        return Ok(HandshakeResult::Done);
+    }
+
+    // ─── Checkout from pool ─────────────────────────────────────────────
+
+    let key = PoolKey {
+        database: database.to_string(),
+        role: actual_user.to_string(),
+    };
+
+    let pooled = match pool.checkout(&key, conn_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            send_error(client, "FATAL", "53300", &format!("pool checkout failed: {e}")).await;
+            return Ok(HandshakeResult::Done);
+        }
+    };
+
+    let mut server = pooled.stream;
+    let mut server_buf = BytesMut::with_capacity(4096);
+
+    // ─── Reset + inject context ─────────────────────────────────────────
+
+    // Build combined reset + injection SQL
+    let mut set_clauses = vec!["DISCARD ALL".to_string()];
+    for (var, val) in config.context_variables.iter().zip(context_values.iter()) {
+        let safe_val = escape_literal(val)?;
+        set_clauses.push(format!("SET {var} = {safe_val}"));
+    }
+    set_clauses.push(format!("SET ROLE {}", quote_ident(actual_user)?));
+    let sql = set_clauses.join("; ") + ";";
+
+    debug!(conn_id, sql = %sql, "pool: reset + inject");
+    let query_msg = build_query_message(&sql);
+    server.write_all(&query_msg).await?;
+
+    // Consume response to our reset + SET commands
+    loop {
+        server.read_buf(&mut server_buf).await?;
+
+        let mut done = false;
+        while let Some(msg) = try_read_backend_message(&mut server_buf) {
+            if msg.is_error_response() {
+                error!(conn_id, error = %msg.error_message(), "pool: context injection failed");
+                // Don't return to pool — connection is in unknown state
+                send_error(client, "FATAL", "XX000", &format!("context injection failed: {}", msg.error_message())).await;
+                return Ok(HandshakeResult::Done);
+            }
+
+            if msg.is_ready_for_query() {
+                done = true;
+                break;
+            }
+        }
+
+        if done {
+            break;
+        }
+    }
+
+    // ─── Synthesize handshake to client ─────────────────────────────────
+
+    // Send cached ParameterStatus messages
+    for ps in &pooled.param_statuses {
+        client.write_all(ps).await?;
+    }
+
+    // Send cached BackendKeyData
+    client.write_all(&pooled.backend_key_data).await?;
+
+    // Send ReadyForQuery
+    let ready = build_ready_for_query();
+    client.write_all(&ready).await?;
+
+    info!(
+        conn_id,
+        context = %context_summary,
+        role = actual_user,
+        "context set (pooled)"
+    );
+
+    Ok(HandshakeResult::Pooled {
+        stream: server,
+        key,
+        pool: Arc::clone(pool),
+    })
+}
+
+/// Inject tenant context (SET vars + SET ROLE) on an upstream connection.
+async fn inject_context(
+    server: &mut UpstreamStream,
+    server_buf: &mut BytesMut,
+    client: &mut ClientStream,
+    config: &Config,
+    actual_user: &str,
+    context_values: &[&str],
+    context_summary: &str,
+    buffered_ready: &[u8],
+    conn_id: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut set_clauses = Vec::new();
     for (var, val) in config.context_variables.iter().zip(context_values.iter()) {
         let safe_val = escape_literal(val)?;
@@ -290,10 +485,10 @@ async fn handshake(
 
     // Consume server's response to our SET commands
     loop {
-        server.read_buf(&mut server_buf).await?;
+        server.read_buf(server_buf).await?;
 
         let mut injection_done = false;
-        while let Some(msg) = try_read_backend_message(&mut server_buf) {
+        while let Some(msg) = try_read_backend_message(server_buf) {
             if msg.is_error_response() {
                 error!(conn_id, error = %msg.error_message(), "context injection failed");
                 client.write_all(&msg.raw).await?;
@@ -307,7 +502,7 @@ async fn handshake(
                     role = actual_user,
                     "context set"
                 );
-                client.write_all(&buffered_ready).await?;
+                client.write_all(buffered_ready).await?;
                 injection_done = true;
                 break;
             }
@@ -322,16 +517,21 @@ async fn handshake(
         }
     }
 
-    // Flush any remaining buffered server data
-    if !server_buf.is_empty() {
-        client.write_all(&server_buf).await?;
-    }
+    Ok(())
+}
 
-    Ok(Some(server))
+/// Build a ReadyForQuery ('Z') message with 'I' (idle) status.
+fn build_ready_for_query() -> BytesMut {
+    use bytes::BufMut;
+    let mut buf = BytesMut::with_capacity(6);
+    buf.put_u8(b'Z');
+    buf.put_i32(5); // length: 4 (len) + 1 (status)
+    buf.put_u8(b'I'); // idle
+    buf
 }
 
 /// Connect to upstream Postgres, optionally wrapping in TLS.
-async fn connect_upstream(
+pub async fn connect_upstream(
     config: &Config,
     upstream_tls: &Option<Arc<ClientConfig>>,
 ) -> Result<UpstreamStream, Box<dyn std::error::Error + Send + Sync>> {

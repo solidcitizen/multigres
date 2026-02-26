@@ -1,8 +1,27 @@
 //! Configuration — CLI flags, environment variables, config file.
 
 use clap::Parser;
+use std::fmt;
 use std::fs;
 use std::path::Path;
+
+/// Pool mode — how upstream connections are managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolMode {
+    /// No pooling — each client gets a fresh upstream connection (passthrough auth).
+    None,
+    /// Session pooling — upstream connections are reused across client sessions.
+    Session,
+}
+
+impl fmt::Display for PoolMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Session => write!(f, "session"),
+        }
+    }
+}
 
 /// Pgvpd — Virtual Private Database for PostgreSQL
 #[derive(Parser, Debug)]
@@ -75,6 +94,30 @@ pub struct Cli {
     /// Handshake timeout in seconds
     #[arg(long)]
     pub handshake_timeout: Option<u64>,
+
+    /// Pool mode: none or session
+    #[arg(long)]
+    pub pool_mode: Option<String>,
+
+    /// Max upstream connections per (database, role)
+    #[arg(long)]
+    pub pool_size: Option<u32>,
+
+    /// Password clients must provide in pool mode
+    #[arg(long)]
+    pub pool_password: Option<String>,
+
+    /// Password pgvpd uses to authenticate to upstream in pool mode
+    #[arg(long)]
+    pub upstream_password: Option<String>,
+
+    /// Seconds idle before a pooled connection is closed
+    #[arg(long)]
+    pub pool_idle_timeout: Option<u64>,
+
+    /// Seconds to wait for a connection when pool is full
+    #[arg(long)]
+    pub pool_checkout_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +138,12 @@ pub struct Config {
     pub upstream_tls_verify: bool,
     pub upstream_tls_ca: Option<String>,
     pub handshake_timeout_secs: u64,
+    pub pool_mode: PoolMode,
+    pub pool_size: u32,
+    pub pool_password: Option<String>,
+    pub upstream_password: Option<String>,
+    pub pool_idle_timeout: u64,
+    pub pool_checkout_timeout: u64,
 }
 
 impl Default for Config {
@@ -116,6 +165,12 @@ impl Default for Config {
             upstream_tls_verify: true,
             upstream_tls_ca: None,
             handshake_timeout_secs: 30,
+            pool_mode: PoolMode::None,
+            pool_size: 20,
+            pool_password: None,
+            upstream_password: None,
+            pool_idle_timeout: 300,
+            pool_checkout_timeout: 5,
         }
     }
 }
@@ -186,6 +241,24 @@ impl Config {
         if let Some(v) = cli.handshake_timeout {
             config.handshake_timeout_secs = v;
         }
+        if let Some(v) = &cli.pool_mode {
+            config.pool_mode = parse_pool_mode(v);
+        }
+        if let Some(v) = cli.pool_size {
+            config.pool_size = v;
+        }
+        if let Some(v) = cli.pool_password {
+            config.pool_password = Some(v);
+        }
+        if let Some(v) = cli.upstream_password {
+            config.upstream_password = Some(v);
+        }
+        if let Some(v) = cli.pool_idle_timeout {
+            config.pool_idle_timeout = v;
+        }
+        if let Some(v) = cli.pool_checkout_timeout {
+            config.pool_checkout_timeout = v;
+        }
 
         config
     }
@@ -199,6 +272,17 @@ impl Config {
         }
         if self.handshake_timeout_secs == 0 {
             return Err("handshake_timeout must be > 0".into());
+        }
+        if self.pool_mode == PoolMode::Session {
+            if self.pool_password.is_none() {
+                return Err("pool_mode = session requires pool_password".into());
+            }
+            if self.upstream_password.is_none() {
+                return Err("pool_mode = session requires upstream_password".into());
+            }
+            if self.pool_size == 0 {
+                return Err("pool_size must be > 0".into());
+            }
         }
         Ok(())
     }
@@ -268,6 +352,26 @@ fn apply_config_file(config: &mut Config, content: &str) {
                     config.handshake_timeout_secs = v;
                 }
             }
+            "pool_mode" => {
+                config.pool_mode = parse_pool_mode(&value);
+            }
+            "pool_size" => {
+                if let Ok(v) = value.parse() {
+                    config.pool_size = v;
+                }
+            }
+            "pool_password" => config.pool_password = Some(value),
+            "upstream_password" => config.upstream_password = Some(value),
+            "pool_idle_timeout" => {
+                if let Ok(v) = value.parse() {
+                    config.pool_idle_timeout = v;
+                }
+            }
+            "pool_checkout_timeout" => {
+                if let Ok(v) = value.parse() {
+                    config.pool_checkout_timeout = v;
+                }
+            }
             _ => {}
         }
     }
@@ -329,5 +433,36 @@ fn apply_env(config: &mut Config) {
         if let Ok(t) = v.parse() {
             config.handshake_timeout_secs = t;
         }
+    }
+    if let Ok(v) = std::env::var("PGVPD_POOL_MODE") {
+        config.pool_mode = parse_pool_mode(&v);
+    }
+    if let Ok(v) = std::env::var("PGVPD_POOL_SIZE") {
+        if let Ok(n) = v.parse() {
+            config.pool_size = n;
+        }
+    }
+    if let Ok(v) = std::env::var("PGVPD_POOL_PASSWORD") {
+        config.pool_password = Some(v);
+    }
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_PASSWORD") {
+        config.upstream_password = Some(v);
+    }
+    if let Ok(v) = std::env::var("PGVPD_POOL_IDLE_TIMEOUT") {
+        if let Ok(t) = v.parse() {
+            config.pool_idle_timeout = t;
+        }
+    }
+    if let Ok(v) = std::env::var("PGVPD_POOL_CHECKOUT_TIMEOUT") {
+        if let Ok(t) = v.parse() {
+            config.pool_checkout_timeout = t;
+        }
+    }
+}
+
+fn parse_pool_mode(value: &str) -> PoolMode {
+    match value.trim().to_lowercase().as_str() {
+        "session" => PoolMode::Session,
+        _ => PoolMode::None,
     }
 }
