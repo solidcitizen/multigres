@@ -9,8 +9,10 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
+use crate::admin::{self, AdminState};
 use crate::config::{Config, PoolMode};
 use crate::connection;
+use crate::metrics::Metrics;
 use crate::pool::Pool;
 use crate::resolver::{self, ResolverEngine};
 use crate::stream::ClientStream;
@@ -46,10 +48,27 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // ─── Context resolvers (if configured) ──────────────────────────────
+    // We need resolver names before creating Metrics, so we load resolvers
+    // first (without metrics), then create Metrics, then set metrics on the engine.
 
+    // Peek at resolver names for Metrics initialization
+    let resolver_names: Vec<String> = match &config.resolvers {
+        Some(path) => {
+            let engine = resolver::load_resolvers(path, None)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            engine.resolvers.iter().map(|r| r.name.clone()).collect()
+        }
+        None => Vec::new(),
+    };
+
+    // ─── Metrics ─────────────────────────────────────────────────────────
+
+    let metrics = Arc::new(Metrics::new(resolver_names));
+
+    // Now load resolvers for real (with metrics)
     let resolver_engine: Option<Arc<ResolverEngine>> = match &config.resolvers {
         Some(path) => {
-            let engine = resolver::load_resolvers(path)
+            let engine = resolver::load_resolvers(path, Some(Arc::clone(&metrics)))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             info!(
                 resolvers = engine.resolvers.len(),
@@ -94,7 +113,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(config);
 
     let pool: Option<Arc<Pool>> = if config.pool_mode == PoolMode::Session {
-        let pool = Arc::new(Pool::new(Arc::clone(&config), upstream_tls.clone()));
+        let pool = Arc::new(Pool::new(Arc::clone(&config), upstream_tls.clone(), Arc::clone(&metrics)));
         let reaper_pool = Arc::clone(&pool);
         tokio::spawn(async move {
             reaper_pool.idle_reaper().await;
@@ -140,6 +159,17 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         "handshake timeout"
     );
 
+    // ─── Admin API (if configured) ──────────────────────────────────────
+
+    if let Some(admin_port) = config.admin_port {
+        let admin_state = AdminState {
+            metrics: Arc::clone(&metrics),
+            pool: pool.clone(),
+            resolver: resolver_engine.clone(),
+        };
+        tokio::spawn(admin::serve(admin_state, admin_port));
+    }
+
     // ─── TLS listener (if configured) ───────────────────────────────────
 
     if let (Some(tls_port), Some(acceptor)) = (config.tls_port, tls_acceptor) {
@@ -151,6 +181,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         let tls_upstream = upstream_tls.clone();
         let tls_pool = pool.clone();
         let tls_resolver = resolver_engine.clone();
+        let tls_metrics = Arc::clone(&metrics);
 
         tokio::spawn(async move {
             loop {
@@ -161,9 +192,12 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         let pool = tls_pool.clone();
                         let resolver = tls_resolver.clone();
                         let acceptor = acceptor.clone();
+                        let m = Arc::clone(&tls_metrics);
                         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
                         tokio::spawn(async move {
+                            Metrics::inc(&m.connections_total);
+                            Metrics::inc(&m.connections_active);
                             match acceptor.accept(socket).await {
                                 Ok(tls_stream) => {
                                     let client = ClientStream::Tls(tls_stream);
@@ -176,6 +210,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                     debug!(conn_id, error = %e, "TLS handshake failed");
                                 }
                             }
+                            Metrics::dec(&m.connections_active);
                         });
                     }
                     Err(e) => {
@@ -194,11 +229,15 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         let upstream = upstream_tls.clone();
         let pool = pool.clone();
         let resolver = resolver_engine.clone();
+        let m = Arc::clone(&metrics);
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
         tokio::spawn(async move {
+            Metrics::inc(&m.connections_total);
+            Metrics::inc(&m.connections_active);
             let client = ClientStream::Plain(socket);
             connection::handle_connection(client, config, upstream, pool, resolver, conn_id).await;
+            Metrics::dec(&m.connections_active);
         });
     }
 }

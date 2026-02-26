@@ -117,6 +117,13 @@
 # Seconds to wait for a connection when the pool is full.
 # pool_checkout_timeout = 5
 
+# ─── Admin API ──────────────────────────────────────────────
+#
+# HTTP port for the admin API (health, metrics, pool status).
+# Disabled by default. Enable for load balancer health checks
+# and Prometheus metrics scraping.
+# admin_port = 9090
+
 # ─── Logging ─────────────────────────────────────────────────
 
 # Log level: debug, info, warn, error

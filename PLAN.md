@@ -93,7 +93,7 @@ const contacts = await db.select().from(contactMaster);
 
 ## Architecture
 
-### Current Architecture (v0.3)
+### Current Architecture (v0.5)
 
 Written in Rust with [tokio](https://tokio.rs/) for async I/O. Single static
 binary, no runtime dependencies.
@@ -113,14 +113,20 @@ State Machine (per connection):
        │              Buffer first ReadyForQuery
        │              (Pool mode: checkout from pool, DISCARD ALL)
        ▼
+  RESOLVING ──────→ Execute context resolvers (if configured)
+       │              Chain results via bind parameters
+       │              Cache results with configurable TTL
+       ▼
   INJECTING ──────→ Send SET commands to server
        │              Consume server response
        │              Forward buffered ReadyForQuery to client
        ▼
-  TRANSPARENT ────→ Zero-copy bidirectional pipe
+  TRANSPARENT ────→ Passthrough: zero-copy bidirectional pipe
        │              (tokio::io::copy_bidirectional)
+       │            Pool mode: message-aware pipe (pipe_pooled)
+       │              Intercepts Terminate ('X') to preserve upstream
        ▼
-  CLEANUP ────────→ Pool mode: ROLLBACK, DISCARD ALL, return to pool
+  CLEANUP ────────→ Pool mode: ROLLBACK → DISCARD ALL → return to idle pool
 ```
 
 Components:
@@ -128,10 +134,13 @@ Components:
 - `src/connection.rs` — Per-connection async state machine
 - `src/auth.rs` — Client-facing and upstream-facing authentication
 - `src/pool.rs` — Session connection pool with idle reaper
+- `src/resolver.rs` — Context resolver engine (SQL queries, caching, dependency ordering)
 - `src/proxy.rs` — TCP/TLS listener, pool creation, connection dispatch
 - `src/config.rs` — Configuration (file, env vars, CLI flags via clap)
 - `src/stream.rs` — Plain/TLS stream abstraction
 - `src/tls.rs` — TLS configuration builders
+- `src/admin.rs` — Admin HTTP API (health, metrics, status)
+- `src/metrics.rs` — Shared atomic counters for observability
 - `src/main.rs` — Entry point, tracing setup
 
 ### Where we're going
@@ -179,7 +188,7 @@ transparent pipe. Single binary, zero dependencies.
 - Idle connection reaper
 - Superuser bypass connections never pooled
 
-### v0.4 — Context Resolvers
+### v0.4 — Context Resolvers ✓
 The architectural pivot from "tenant isolation proxy" to "application security
 context engine." Inspired by Oracle's evolution from VPD to Real Application
 Security (RAS): the database resolves the user's full security context at
@@ -197,6 +206,9 @@ connection time, not the application.
 - **Resolver-only mode**: username carries identity only (`app_user.user-uuid`),
   all context (org, teams, grants, even role) comes from resolvers — the
   endgame for full RAS equivalence
+- **Integration tests**: 13 end-to-end tests via `./tests/run.sh` — passthrough
+  isolation, pool auth/reuse, resolver context resolution, cache hits, superuser
+  bypass. Uses Docker Compose for a real Postgres instance.
 
 This enables multi-dimensional RBAC:
 ```
@@ -209,11 +221,15 @@ user sees case IF:
 
 RFC: `docs/rfcs/rfc-context-resolvers.md`
 
-### v0.5 — Observability + Admin
-- Admin API (HTTP) for runtime config, metrics, pool status
-- Per-tenant query counts, latency percentiles
-- Prometheus metrics endpoint
-- Resolver execution time metrics, cache hit rate
+### v0.5 — Observability + Admin ✓
+- **Admin HTTP API** on configurable `admin_port` (axum):
+  - `GET /health` — 200 OK JSON for load balancer health checks
+  - `GET /metrics` — Prometheus exposition format (connections, pool, resolver counters)
+  - `GET /status` — JSON snapshot of pool buckets and resolver state
+- **Shared metrics** (`Arc<Metrics>`) with `AtomicU64` counters — no external prometheus crate
+- **Connection metrics**: total accepted, currently active
+- **Pool metrics**: checkouts, reuses, creates, checkins, discards, timeouts; per-bucket total/idle
+- **Resolver metrics**: cache hits/misses, per-resolver executions/errors, cache size
 
 ### v0.6 — Advanced Isolation
 - Per-tenant connection limits

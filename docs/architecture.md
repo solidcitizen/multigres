@@ -43,7 +43,9 @@ itself.**
 
 ### Connection Lifecycle
 
-Each client connection goes through a five-state machine:
+Each client connection goes through the following state machine. Passthrough
+mode and pool mode share the same states but differ in authentication and
+the transparent pipe phase.
 
 ```
   WAIT_STARTUP
@@ -51,26 +53,38 @@ Each client connection goes through a five-state machine:
        │  Client sends StartupMessage with user=app_user.acme
        │  → Parse tenant from username
        │  → Rewrite username to app_user
-       │  → Connect to upstream Postgres
+       │  Passthrough: connect to upstream Postgres
+       │  Pool mode: pgvpd authenticates client (cleartext)
        ▼
   AUTHENTICATING
        │
-       │  Relay auth exchange bidirectionally
-       │  Client ←→ Pgvpd ←→ Postgres
-       │  (cleartext, MD5, SCRAM-SHA-256 all work)
-       │  Multi-round-trip SASL handled correctly
-       │  → Detect AuthenticationOk from server
+       │  Passthrough: relay auth exchange bidirectionally
+       │    Client ←→ Pgvpd ←→ Postgres
+       │    (cleartext, MD5, SCRAM-SHA-256 all work)
+       │    Multi-round-trip SASL handled correctly
+       │  Pool mode: pgvpd verifies client password, then
+       │    checks out a pooled upstream connection
+       │  → Detect AuthenticationOk
        ▼
   POST_AUTH
        │
        │  Forward ParameterStatus, BackendKeyData to client
        │  → When ReadyForQuery arrives from server: BUFFER IT
        │    (don't send to client yet)
+       │  Pool mode: DISCARD ALL to reset session state
+       ▼
+  RESOLVING
+       │
+       │  Execute context resolvers (if configured)
+       │  Each resolver: SQL query → bind params from prior results
+       │  Results cached with configurable TTL
+       │  Required resolver returning no rows → terminate connection
        ▼
   INJECTING
        │
        │  Send to server:
        │    SET app.current_tenant_id = 'acme';
+       │    SET app.org_id = '<resolved>';    (if resolvers configured)
        │    SET ROLE app_user;
        │  → Consume server's CommandComplete responses
        │  → When server sends ReadyForQuery (confirming SETs):
@@ -78,12 +92,23 @@ Each client connection goes through a five-state machine:
        ▼
   TRANSPARENT
        │
-       │  Zero-copy bidirectional pipe
-       │  (tokio::io::copy_bidirectional)
+       │  Passthrough: zero-copy bidirectional pipe
+       │    (tokio::io::copy_bidirectional)
+       │  Pool mode: message-aware pipe (pipe_pooled)
+       │    Intercepts Terminate ('X') from client to preserve upstream
+       │    All other messages forwarded with message framing
        │  All queries hit a connection with:
        │    - app.current_tenant_id = 'acme'
        │    - ROLE = app_user (NOBYPASSRLS)
        │  RLS policies filter every result set.
+       ▼
+  CLEANUP (pool mode only)
+       │
+       │  Send ROLLBACK (ends any open transaction)
+       │  Send DISCARD ALL (resets all session state)
+       │  Two separate SimpleQuery messages (DISCARD ALL
+       │  cannot run inside a transaction block)
+       │  → Return connection to idle pool
        ▼
   (connection close)
 ```
@@ -176,13 +201,17 @@ needed for the proxy lifecycle:
 | Message | Direction | Why |
 |---------|-----------|-----|
 | StartupMessage | Client → Server | Extract username, rewrite, forward |
-| SSLRequest | Client → Server | Deny with 'N' (v0.1) |
+| SSLRequest | Client → Server | TLS negotiation (accept or deny) |
 | CancelRequest | Client → Server | Detect and close gracefully |
 | Authentication (R) | Server → Client | Relay auth challenges, detect AuthenticationOk |
 | ReadyForQuery (Z) | Server → Client | Buffer during injection |
-| ErrorResponse (E) | Server → Client | Detect injection failures |
+| ErrorResponse (E) | Server → Client | Detect injection/resolver failures |
 | CommandComplete (C) | Server → Client | Consume injection responses |
 | ParameterStatus (S) | Server → Client | Forward during post-auth and injection |
+| RowDescription (T) | Server → Client | Parse column names during resolver queries |
+| DataRow (D) | Server → Client | Parse resolver result rows |
+| BackendKeyData (K) | Server → Client | Cache for pool mode client synthesis |
+| Terminate (X) | Client → Server | Intercepted in pool mode (`pipe_pooled`) to preserve upstream |
 
 ### SCRAM-SHA-256 Handling
 
@@ -193,18 +222,22 @@ the handshake.
 
 ### Messages Not Parsed (Transparent)
 
-Everything else — `Query`, `Parse`, `Bind`, `Execute`, `DataRow`,
-`RowDescription`, `CopyData`, extended query protocol messages — are piped
-through without inspection. After entering `TRANSPARENT` state, Pgvpd
-is a zero-overhead TCP relay via `tokio::io::copy_bidirectional`.
+Everything else — `Query`, `Parse`, `Bind`, `Execute`, `CopyData`,
+extended query protocol messages — are piped through without inspection.
+In passthrough mode, Pgvpd is a zero-overhead TCP relay via
+`tokio::io::copy_bidirectional`. In pool mode, `pipe_pooled` does
+message-level framing to intercept Terminate but forwards all other
+messages without deep parsing.
 
 ## Component Map
 
 ```
 src/
 ├── main.rs           Entry point, banner, tracing setup
-├── proxy.rs          TCP listener (tokio), spawns per-connection tasks
+├── proxy.rs          TCP/TLS listener, pool/resolver creation, connection dispatch
 ├── connection.rs     Per-connection async state machine (the core logic)
+│                       - Passthrough: auth relay → resolve → inject → copy_bidirectional
+│                       - Pool mode: client auth → checkout → reset → resolve → inject → pipe_pooled
 ├── protocol.rs       Wire protocol primitives:
 │                       - StartupMessage parse/build
 │                       - Backend message framing (type + length + payload)
@@ -212,6 +245,19 @@ src/
 │                       - ErrorResponse builder
 │                       - Auth challenge detection (SCRAM-aware)
 │                       - SQL escaping (escape_literal, quote_ident)
+├── auth.rs           Client-facing auth (pool mode) and upstream auth (cleartext/MD5/SCRAM)
+├── pool.rs           Session connection pool:
+│                       - Keyed by (database, role)
+│                       - Checkout/checkin with ROLLBACK + DISCARD ALL reset
+│                       - Idle reaper background task
+├── resolver.rs       Context resolver engine:
+│                       - TOML config parsing, topological sort
+│                       - SQL query execution with parameter substitution
+│                       - In-process cache with configurable TTL
+├── stream.rs         Plain/TLS stream abstraction (ClientStream, UpstreamStream)
+├── tls.rs            TLS configuration builders (server + client)
+├── admin.rs          Admin HTTP API (/health, /metrics, /status)
+├── metrics.rs        Shared atomic counters for observability
 └── config.rs         Configuration from file/env/CLI (clap)
 
 sql/
@@ -221,6 +267,12 @@ sql/
                         - pgvpd_protect() helper
                         - pgvpd_status() verification
 
+tests/
+├── run.sh            Integration test runner (Docker + psql)
+├── fixtures.sql      Test data (tenants, org members, RLS policies)
+├── docker-compose.yml  Postgres container for tests
+└── *.conf            Per-suite config files
+
 prototype/            TypeScript prototype (validated the architecture)
 ```
 
@@ -228,14 +280,19 @@ prototype/            TypeScript prototype (validated the architecture)
 
 | Phase | Overhead |
 |-------|----------|
-| Startup (connection setup → injection) | ~2 extra SQL statements per connection |
-| Transparent pipe | Zero — `tokio::io::copy_bidirectional`, no message parsing |
+| Startup (connection setup → injection) | ~2 extra SQL statements per connection (+ resolver queries if configured) |
+| Passthrough transparent pipe | Zero — `tokio::io::copy_bidirectional`, no message parsing |
+| Pool mode transparent pipe | Minimal — `pipe_pooled` does message framing (1-byte type + 4-byte length) to intercept Terminate; all other data forwarded without deep parsing |
+| Pool checkout | Reuse: ~0 (pop from idle queue). New: one upstream TCP connect + auth handshake |
+| Pool checkin | Two SimpleQuery round-trips: ROLLBACK + DISCARD ALL |
+| Resolver execution | One SQL round-trip per resolver (cached results skip the query) |
 | Memory | Minimal per-connection: socket buffers + BytesMut state |
 | Binary | Single static binary, ~2MB release build, no runtime dependencies |
 
-Pgvpd adds latency only during connection setup. Once in transparent
-mode, it's equivalent to a direct TCP connection. Tokio's async runtime
-handles thousands of concurrent connections on a single thread.
+Pgvpd adds latency only during connection setup. In passthrough mode, once
+in transparent state, it's equivalent to a direct TCP connection. In pool
+mode, `pipe_pooled` adds negligible overhead for message framing. Tokio's
+async runtime handles thousands of concurrent connections on a single thread.
 
 ## Comparison with Alternatives
 
