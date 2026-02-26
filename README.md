@@ -6,15 +6,19 @@
 
 **Virtual Private Database for PostgreSQL**
 
-Pgvpd is a TCP proxy that makes tenant identity intrinsic to the database
-connection — the way Oracle VPD does — so your ORM stays completely unaware of
-multi-tenancy. The database enforces isolation. The application just connects.
+Pgvpd extends the Postgres wire protocol with tenant identity — the way
+Oracle VPD does — so your ORM stays completely unaware of multi-tenancy.
+It sits between your application and PostgreSQL, speaking the same binary
+API that every Postgres client already uses. No HTTP gateway, no REST
+layer, no SDK. Your application connects to pgvpd exactly like it
+connects to Postgres, because it *is* the Postgres API — with tenant
+context built into the connection handshake.
 
 ```
-Your App ──→ Pgvpd Proxy ──→ PostgreSQL (RLS enforced)
-              ↕                     ↕
-        Extracts tenant        Policies filter
-        from username          by tenant context
+Your App ──→ Pgvpd ──→ PostgreSQL (RLS enforced)
+              ↕                 ↕
+        Extracts tenant    Policies filter
+        from username      by tenant context
 ```
 
 ## The Problem
