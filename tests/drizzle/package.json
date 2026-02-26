@@ -1,0 +1,16 @@
+{
+  "name": "pgvpd-drizzle-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx test.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.39.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0"
+  }
+}
