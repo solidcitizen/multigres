@@ -277,8 +277,6 @@ tests/
 ├── fixtures.sql      Test data (tenants, org members, RLS policies)
 ├── docker-compose.yml  Postgres container for tests
 └── *.conf            Per-suite config files
-
-prototype/            TypeScript prototype (validated the architecture)
 ```
 
 ## Performance Characteristics

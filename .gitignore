@@ -1,10 +1,6 @@
 # Rust
 /target/
 
-# TypeScript prototype
-prototype/node_modules/
-prototype/dist/
-
 # Config (may contain passwords)
 pgvpd.conf
 .env
