@@ -2,8 +2,8 @@
 //! Supports both plain and TLS listeners.
 
 use rustls::ClientConfig;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -114,7 +114,11 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(config);
 
     let pool: Option<Arc<Pool>> = if config.pool_mode == PoolMode::Session {
-        let pool = Arc::new(Pool::new(Arc::clone(&config), upstream_tls.clone(), Arc::clone(&metrics)));
+        let pool = Arc::new(Pool::new(
+            Arc::clone(&config),
+            upstream_tls.clone(),
+            Arc::clone(&metrics),
+        ));
         let reaper_pool = Arc::clone(&pool);
         tokio::spawn(async move {
             reaper_pool.idle_reaper().await;
@@ -158,10 +162,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if upstream_tls.is_some() {
-        info!(
-            verify = config.upstream_tls_verify,
-            "upstream TLS enabled"
-        );
+        info!(verify = config.upstream_tls_verify, "upstream TLS enabled");
     }
 
     info!(
@@ -214,7 +215,14 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(tls_stream) => {
                                     let client = ClientStream::Tls(tls_stream);
                                     connection::handle_connection(
-                                        client, config, upstream, pool, resolver, tenant, Arc::clone(&m), conn_id,
+                                        client,
+                                        config,
+                                        upstream,
+                                        pool,
+                                        resolver,
+                                        tenant,
+                                        Arc::clone(&m),
+                                        conn_id,
                                     )
                                     .await;
                                 }
@@ -249,7 +257,17 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             Metrics::inc(&m.connections_total);
             Metrics::inc(&m.connections_active);
             let client = ClientStream::Plain(socket);
-            connection::handle_connection(client, config, upstream, pool, resolver, tenant, Arc::clone(&m), conn_id).await;
+            connection::handle_connection(
+                client,
+                config,
+                upstream,
+                pool,
+                resolver,
+                tenant,
+                Arc::clone(&m),
+                conn_id,
+            )
+            .await;
             Metrics::dec(&m.connections_active);
         });
     }

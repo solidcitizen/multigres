@@ -5,8 +5,8 @@ mod connection;
 mod metrics;
 mod pool;
 mod protocol;
-mod resolver;
 mod proxy;
+mod resolver;
 mod stream;
 mod tenant;
 mod tls;
@@ -26,8 +26,7 @@ async fn main() {
     let config = config::Config::load();
 
     // Set up tracing with the configured log level
-    let filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)

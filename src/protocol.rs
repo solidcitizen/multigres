@@ -22,7 +22,7 @@ const SSL_REQUEST_CODE: i32 = 80877103;
 const CANCEL_REQUEST_CODE: i32 = 80877102;
 
 /// Single byte denying SSL
-pub const SSL_DENY: &[u8] = &[b'N'];
+pub const SSL_DENY: &[u8] = b"N";
 
 /// Backend message types we care about
 pub mod backend {
@@ -173,7 +173,7 @@ impl BackendMessage {
 
             match field_type {
                 b'M' => parts.insert(0, value), // Message
-                b'D' => parts.push(value),       // Detail
+                b'D' => parts.push(value),      // Detail
                 _ => {}
             }
         }
@@ -198,7 +198,7 @@ pub fn try_read_startup(buf: &mut BytesMut) -> Option<StartupType> {
     }
 
     let length = i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    if length < 8 || length > 10240 {
+    if !(8..=10240).contains(&length) {
         return None; // sanity check
     }
     if buf.len() < length {
@@ -450,14 +450,358 @@ pub fn escape_set_value(value: &str) -> String {
 
 /// Quote an identifier (double-quoted).
 pub fn quote_ident(value: &str) -> io::Result<String> {
-    if !value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("invalid identifier: '{value}'"),
         ));
     }
     Ok(format!("\"{}\"", value.replace('"', "\"\"")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+
+    // ─── Startup message parsing ─────────────────────────────────────────
+
+    fn build_raw_startup(version: i32, params: &[(&str, &str)]) -> BytesMut {
+        let mut data = BytesMut::new();
+        data.put_i32(0); // placeholder for length
+        data.put_i32(version);
+        for (k, v) in params {
+            data.put_slice(k.as_bytes());
+            data.put_u8(0);
+            data.put_slice(v.as_bytes());
+            data.put_u8(0);
+        }
+        data.put_u8(0); // terminal null
+        let len = data.len() as i32;
+        data[0..4].copy_from_slice(&len.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn parse_normal_startup() {
+        let mut buf = build_raw_startup(
+            PROTOCOL_VERSION_30,
+            &[("user", "admin"), ("database", "mydb")],
+        );
+        match try_read_startup(&mut buf) {
+            Some(StartupType::Startup(msg)) => {
+                assert_eq!(msg.params.get("user").unwrap(), "admin");
+                assert_eq!(msg.params.get("database").unwrap(), "mydb");
+            }
+            other => panic!("expected Startup, got {:?}", other.is_some()),
+        }
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn parse_ssl_request() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(8);
+        buf.put_i32(SSL_REQUEST_CODE);
+        assert!(matches!(
+            try_read_startup(&mut buf),
+            Some(StartupType::SslRequest)
+        ));
+    }
+
+    #[test]
+    fn parse_cancel_request() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(16); // length: 8 for header + 8 for pid+key
+        buf.put_i32(CANCEL_REQUEST_CODE);
+        buf.put_i32(1234); // pid
+        buf.put_i32(5678); // secret key
+        assert!(matches!(
+            try_read_startup(&mut buf),
+            Some(StartupType::CancelRequest)
+        ));
+    }
+
+    #[test]
+    fn truncated_startup_returns_none() {
+        // Only 4 bytes — need at least 8
+        let mut buf = BytesMut::from(&[0u8, 0, 0, 8][..]);
+        assert!(try_read_startup(&mut buf).is_none());
+    }
+
+    #[test]
+    fn incomplete_startup_returns_none() {
+        // Header says 20 bytes but buffer only has 10
+        let mut buf = BytesMut::new();
+        buf.put_i32(20);
+        buf.put_i32(PROTOCOL_VERSION_30);
+        buf.put_u8(0);
+        buf.put_u8(0);
+        assert!(try_read_startup(&mut buf).is_none());
+    }
+
+    #[test]
+    fn oversized_startup_returns_none() {
+        // Length > 10240 sanity check
+        let mut buf = BytesMut::new();
+        buf.put_i32(20000);
+        buf.put_i32(PROTOCOL_VERSION_30);
+        buf.extend_from_slice(&vec![0u8; 20000]);
+        assert!(try_read_startup(&mut buf).is_none());
+    }
+
+    #[test]
+    fn startup_with_empty_params() {
+        // Just version + terminal null, no key-value pairs
+        let mut buf = build_raw_startup(PROTOCOL_VERSION_30, &[]);
+        match try_read_startup(&mut buf) {
+            Some(StartupType::Startup(msg)) => {
+                assert!(msg.params.is_empty());
+            }
+            _ => panic!("expected empty Startup"),
+        }
+    }
+
+    // ─── Backend message framing ─────────────────────────────────────────
+
+    fn build_raw_backend_message(msg_type: u8, payload: &[u8]) -> BytesMut {
+        let mut buf = BytesMut::new();
+        buf.put_u8(msg_type);
+        buf.put_i32((4 + payload.len()) as i32); // length includes itself
+        buf.put_slice(payload);
+        buf
+    }
+
+    #[test]
+    fn parse_backend_message_ready_for_query() {
+        let mut buf = build_raw_backend_message(backend::READY_FOR_QUERY, &[b'I']);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(msg.is_ready_for_query());
+        assert_eq!(msg.payload.len(), 1);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn parse_backend_message_auth_ok() {
+        let mut payload = BytesMut::new();
+        payload.put_i32(auth::OK);
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(msg.is_auth_ok());
+    }
+
+    #[test]
+    fn truncated_backend_message_returns_none() {
+        // Only 3 bytes — need at least 5 (1 type + 4 length)
+        let mut buf = BytesMut::from(&[b'Z', 0, 0][..]);
+        assert!(try_read_backend_message(&mut buf).is_none());
+    }
+
+    #[test]
+    fn incomplete_backend_message_returns_none() {
+        // Header says 10 bytes of payload but only 2 present
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'Z');
+        buf.put_i32(10); // length field = 10, so total = 11
+        buf.put_u8(b'I');
+        buf.put_u8(0);
+        assert!(try_read_backend_message(&mut buf).is_none());
+    }
+
+    #[test]
+    fn auth_challenge_detection() {
+        // SASL (10) should be a challenge
+        let mut payload = BytesMut::new();
+        payload.put_i32(auth::SASL);
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(msg.is_auth_challenge());
+
+        // MD5 (5) should be a challenge
+        let mut payload = BytesMut::new();
+        payload.put_i32(auth::MD5_PASSWORD);
+        payload.put_slice(&[1, 2, 3, 4]); // salt
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(msg.is_auth_challenge());
+
+        // AuthOk (0) should NOT be a challenge
+        let mut payload = BytesMut::new();
+        payload.put_i32(auth::OK);
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(!msg.is_auth_challenge());
+
+        // SASL_FINAL (12) should NOT be a challenge
+        let mut payload = BytesMut::new();
+        payload.put_i32(auth::SASL_FINAL);
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(!msg.is_auth_challenge());
+    }
+
+    #[test]
+    fn auth_subtype_extraction() {
+        // Non-auth message returns None
+        let mut buf = build_raw_backend_message(backend::READY_FOR_QUERY, &[b'I']);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert_eq!(msg.auth_subtype(), None);
+
+        // Auth message with short payload returns None
+        let mut buf = build_raw_backend_message(backend::AUTHENTICATION, &[0, 0]);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert_eq!(msg.auth_subtype(), None);
+    }
+
+    #[test]
+    fn error_response_parsing() {
+        // Build an ErrorResponse with M and D fields
+        let mut payload = BytesMut::new();
+        payload.put_u8(b'S'); // Severity
+        payload.put_slice(b"ERROR\0");
+        payload.put_u8(b'M'); // Message
+        payload.put_slice(b"relation does not exist\0");
+        payload.put_u8(b'D'); // Detail
+        payload.put_slice(b"table \"foo\" not found\0");
+        payload.put_u8(0); // terminator
+
+        let mut buf = build_raw_backend_message(backend::ERROR_RESPONSE, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert!(msg.is_error_response());
+        let err = msg.error_message();
+        assert!(err.contains("relation does not exist"));
+        assert!(err.contains("table \"foo\" not found"));
+    }
+
+    #[test]
+    fn error_response_empty_payload() {
+        let mut payload = BytesMut::new();
+        payload.put_u8(0); // just terminator
+        let mut buf = build_raw_backend_message(backend::ERROR_RESPONSE, &payload);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert_eq!(msg.error_message(), "unknown error");
+    }
+
+    #[test]
+    fn non_error_message_returns_not_an_error() {
+        let mut buf = build_raw_backend_message(backend::READY_FOR_QUERY, &[b'I']);
+        let msg = try_read_backend_message(&mut buf).unwrap();
+        assert_eq!(msg.error_message(), "not an error");
+    }
+
+    // ─── Message building ────────────────────────────────────────────────
+
+    #[test]
+    fn build_and_parse_startup_roundtrip() {
+        let mut params = HashMap::new();
+        params.insert("user".to_string(), "app_user".to_string());
+        params.insert("database".to_string(), "mydb".to_string());
+        let mut buf = build_startup_message(&params);
+        match try_read_startup(&mut buf) {
+            Some(StartupType::Startup(msg)) => {
+                assert_eq!(msg.params.get("user").unwrap(), "app_user");
+                assert_eq!(msg.params.get("database").unwrap(), "mydb");
+            }
+            _ => panic!("roundtrip failed"),
+        }
+    }
+
+    #[test]
+    fn build_query_message_format() {
+        let buf = build_query_message("SELECT 1");
+        assert_eq!(buf[0], b'Q');
+        let len = i32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+        assert_eq!(len, 4 + 8 + 1); // length field + "SELECT 1" + null
+        assert_eq!(buf[buf.len() - 1], 0); // null terminator
+    }
+
+    #[test]
+    fn build_and_parse_password_roundtrip() {
+        let mut buf = build_password_message(b"secret123");
+        let pw = try_read_password_message(&mut buf).unwrap();
+        assert_eq!(pw, "secret123");
+    }
+
+    #[test]
+    fn password_message_wrong_type_returns_none() {
+        // Build a message with type 'Q' instead of 'p'
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'Q');
+        buf.put_i32(12);
+        buf.put_slice(b"secret\0");
+        buf.put_u8(0);
+        assert!(try_read_password_message(&mut buf).is_none());
+    }
+
+    #[test]
+    fn password_message_incomplete_returns_none() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'p');
+        buf.put_i32(100); // claims 100 bytes but we only have a few
+        buf.put_slice(b"short");
+        assert!(try_read_password_message(&mut buf).is_none());
+    }
+
+    // ─── SQL escaping ────────────────────────────────────────────────────
+
+    #[test]
+    fn escape_literal_valid_values() {
+        assert_eq!(escape_literal("tenant_a").unwrap(), "'tenant_a'");
+        assert_eq!(escape_literal("my-tenant").unwrap(), "'my-tenant'");
+        assert_eq!(escape_literal("tenant.sub").unwrap(), "'tenant.sub'");
+        assert_eq!(escape_literal("abc123").unwrap(), "'abc123'");
+    }
+
+    #[test]
+    fn escape_literal_rejects_special_chars() {
+        assert!(escape_literal("'; DROP TABLE--").is_err());
+        assert!(escape_literal("tenant\x00id").is_err());
+        assert!(escape_literal("tenant id").is_err()); // space
+        assert!(escape_literal("tenant/id").is_err()); // slash
+        assert!(escape_literal("{a,b}").is_err()); // braces
+    }
+
+    #[test]
+    fn escape_set_value_allows_anything() {
+        assert_eq!(escape_set_value("simple"), "'simple'");
+        assert_eq!(escape_set_value("{a,b,c}"), "'{a,b,c}'");
+        assert_eq!(escape_set_value("it's"), "'it''s'");
+        assert_eq!(escape_set_value("a'b'c"), "'a''b''c'");
+    }
+
+    #[test]
+    fn quote_ident_valid() {
+        assert_eq!(quote_ident("my_table").unwrap(), "\"my_table\"");
+        assert_eq!(quote_ident("col1").unwrap(), "\"col1\"");
+    }
+
+    #[test]
+    fn quote_ident_rejects_special_chars() {
+        assert!(quote_ident("my table").is_err()); // space
+        assert!(quote_ident("my-table").is_err()); // hyphen
+        assert!(quote_ident("a;b").is_err()); // semicolon
+    }
+
+    // ─── Multiple messages in buffer ─────────────────────────────────────
+
+    #[test]
+    fn parse_multiple_backend_messages_from_single_buffer() {
+        let mut buf = BytesMut::new();
+        // Message 1: ReadyForQuery
+        let msg1 = build_raw_backend_message(backend::READY_FOR_QUERY, &[b'I']);
+        buf.extend_from_slice(&msg1);
+        // Message 2: AuthOk
+        let mut auth_payload = BytesMut::new();
+        auth_payload.put_i32(auth::OK);
+        let msg2 = build_raw_backend_message(backend::AUTHENTICATION, &auth_payload);
+        buf.extend_from_slice(&msg2);
+
+        let m1 = try_read_backend_message(&mut buf).unwrap();
+        assert!(m1.is_ready_for_query());
+
+        let m2 = try_read_backend_message(&mut buf).unwrap();
+        assert!(m2.is_auth_ok());
+
+        assert!(buf.is_empty());
+    }
 }

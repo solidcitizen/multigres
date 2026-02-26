@@ -79,8 +79,8 @@ pub fn load_resolvers(path: &str, metrics: Option<Arc<Metrics>>) -> Result<Resol
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read resolver file '{}': {}", path, e))?;
 
-    let parsed: ResolverFile = toml::from_str(&content)
-        .map_err(|e| format!("invalid TOML in '{}': {}", path, e))?;
+    let parsed: ResolverFile =
+        toml::from_str(&content).map_err(|e| format!("invalid TOML in '{}': {}", path, e))?;
 
     if parsed.resolver.is_empty() {
         return Err(format!(
@@ -243,18 +243,18 @@ impl ResolverEngine {
             let cache_key = if def.cache_ttl > Duration::ZERO {
                 let key = make_cache_key(&def.name, &input_values);
                 let cache = self.cache.lock().await;
-                if let Some(entry) = cache.get(&key) {
-                    if entry.expires_at > Instant::now() {
-                        if let Some(m) = &self.metrics {
-                            Metrics::inc(&m.resolver_cache_hits);
-                        }
-                        debug!(conn_id, resolver = %def.name, "cache hit");
-                        for (session_var, col_name) in &def.inject {
-                            let val = entry.values.get(col_name).cloned().flatten();
-                            context.insert(session_var.clone(), val);
-                        }
-                        continue;
+                if let Some(entry) = cache.get(&key)
+                    && entry.expires_at > Instant::now()
+                {
+                    if let Some(m) = &self.metrics {
+                        Metrics::inc(&m.resolver_cache_hits);
                     }
+                    debug!(conn_id, resolver = %def.name, "cache hit");
+                    for (session_var, col_name) in &def.inject {
+                        let val = entry.values.get(col_name).cloned().flatten();
+                        context.insert(session_var.clone(), val);
+                    }
+                    continue;
                 }
                 drop(cache);
                 Some(key)
@@ -269,17 +269,18 @@ impl ResolverEngine {
                     Metrics::inc(counter);
                 }
             }
-            let result = match execute_resolver(server, server_buf, def, &input_values, conn_id).await {
-                Ok(r) => r,
-                Err(e) => {
-                    if let Some(m) = &self.metrics {
-                        if let Some(counter) = m.resolver_errors.get(resolver_idx) {
+            let result =
+                match execute_resolver(server, server_buf, def, &input_values, conn_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(m) = &self.metrics
+                            && let Some(counter) = m.resolver_errors.get(resolver_idx)
+                        {
                             Metrics::inc(counter);
                         }
+                        return Err(e);
                     }
-                    return Err(e);
-                }
-            };
+                };
 
             match result {
                 None => {
@@ -344,7 +345,11 @@ impl ResolverEngine {
         cache.retain(|_, entry| entry.expires_at > now);
         let evicted = before - cache.len();
         if evicted > 0 {
-            debug!(evicted, remaining = cache.len(), "resolver cache: evicted expired entries");
+            debug!(
+                evicted,
+                remaining = cache.len(),
+                "resolver cache: evicted expired entries"
+            );
         }
     }
 }
@@ -398,10 +403,10 @@ async fn execute_resolver(
                     let err_msg = msg.error_message();
                     error!(conn_id, resolver = %def.name, error = %err_msg, "resolver query error");
                     drain_to_ready(server, server_buf).await?;
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("resolver '{}' query error: {}", def.name, err_msg),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "resolver '{}' query error: {}",
+                        def.name, err_msg
+                    )));
                 }
                 _ => {} // NoticeResponse, etc.
             }
@@ -576,15 +581,9 @@ mod tests {
     #[test]
     fn test_substitute_params() {
         let sql = "SELECT * FROM t WHERE a = $1 AND b = $2";
-        let vals = vec![
-            Some("hello".to_string()),
-            Some("world".to_string()),
-        ];
+        let vals = vec![Some("hello".to_string()), Some("world".to_string())];
         let result = substitute_params(sql, &vals).unwrap();
-        assert_eq!(
-            result,
-            "SELECT * FROM t WHERE a = 'hello' AND b = 'world'"
-        );
+        assert_eq!(result, "SELECT * FROM t WHERE a = 'hello' AND b = 'world'");
     }
 
     #[test]
@@ -600,10 +599,7 @@ mod tests {
         let sql = "SELECT * FROM t WHERE a = ANY($1::uuid[])";
         let vals = vec![Some("{abc,def}".to_string())];
         let result = substitute_params(sql, &vals).unwrap();
-        assert_eq!(
-            result,
-            "SELECT * FROM t WHERE a = ANY('{abc,def}'::uuid[])"
-        );
+        assert_eq!(result, "SELECT * FROM t WHERE a = ANY('{abc,def}'::uuid[])");
     }
 
     #[test]

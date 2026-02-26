@@ -21,8 +21,8 @@ use crate::config::{Config, PoolMode};
 use crate::metrics::Metrics;
 use crate::pool::{Pool, PoolKey};
 use crate::protocol::{
-    build_error_response, build_query_message, build_startup_message, escape_set_value,
-    quote_ident, try_read_backend_message, try_read_startup, StartupType, SSL_DENY,
+    SSL_DENY, StartupType, build_error_response, build_query_message, build_startup_message,
+    escape_set_value, quote_ident, try_read_backend_message, try_read_startup,
 };
 use crate::resolver::ResolverEngine;
 use crate::stream::{ClientStream, UpstreamStream};
@@ -44,6 +44,7 @@ pub enum HandshakeResult {
 }
 
 /// Handle a single client connection through its full lifecycle.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_connection(
     mut client: ClientStream,
     config: Arc<Config>,
@@ -103,12 +104,20 @@ pub async fn handle_connection(
         HandshakeResult::Passthrough(mut server) => {
             debug!(conn_id, "transparent pipe");
             let result = if let Some(timeout) = query_timeout {
-                match tokio::time::timeout(timeout, tokio::io::copy_bidirectional(&mut client, &mut server)).await {
+                match tokio::time::timeout(
+                    timeout,
+                    tokio::io::copy_bidirectional(&mut client, &mut server),
+                )
+                .await
+                {
                     Ok(r) => r,
                     Err(_) => {
                         warn!(conn_id, "query timeout (passthrough)");
                         Metrics::inc(&config_metrics.tenant_timeouts);
-                        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "tenant query timeout"))
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "tenant query timeout",
+                        ))
                     }
                 }
             } else {
@@ -124,7 +133,15 @@ pub async fn handle_connection(
             pool,
         } => {
             debug!(conn_id, "transparent pipe (pooled)");
-            if let Err(e) = pipe_pooled(&mut client, &mut stream, conn_id, query_timeout, &config_metrics).await {
+            if let Err(e) = pipe_pooled(
+                &mut client,
+                &mut stream,
+                conn_id,
+                query_timeout,
+                &config_metrics,
+            )
+            .await
+            {
                 debug!(conn_id, error = %e, "connection ended");
             }
             pool.checkin(key, stream, conn_id).await;
@@ -309,7 +326,13 @@ async fn handshake(
     let tenant_payload = &raw_user[sep_idx + config.tenant_separator.len()..];
 
     if actual_user.is_empty() || tenant_payload.is_empty() {
-        send_error(client, "FATAL", "28000", "empty role or context in username").await;
+        send_error(
+            client,
+            "FATAL",
+            "28000",
+            "empty role or context in username",
+        )
+        .await;
         return Ok((HandshakeResult::Done, None));
     }
 
@@ -366,21 +389,21 @@ async fn handshake(
 
     // ─── Branch: pool mode vs passthrough ───────────────────────────────
 
-    if config.pool_mode == PoolMode::Session {
-        if let Some(pool) = pool {
-            let (result, _) = handle_pooled(
-                client,
-                config,
-                pool,
-                actual_user,
-                &database,
-                &context_values,
-                resolver_engine,
-                conn_id,
-            )
-            .await?;
-            return Ok((result, tenant_guard));
-        }
+    if config.pool_mode == PoolMode::Session
+        && let Some(pool) = pool
+    {
+        let (result, _) = handle_pooled(
+            client,
+            config,
+            pool,
+            actual_user,
+            &database,
+            &context_values,
+            resolver_engine,
+            conn_id,
+        )
+        .await?;
+        return Ok((result, tenant_guard));
     }
 
     // ─── Passthrough: connect and relay auth ────────────────────────────
@@ -401,6 +424,7 @@ async fn handshake(
 }
 
 /// Passthrough mode — connect to upstream, relay auth, resolve context, inject.
+#[allow(clippy::too_many_arguments)]
 async fn handle_passthrough(
     client: &mut ClientStream,
     config: &Config,
@@ -471,7 +495,10 @@ async fn handle_passthrough(
         let mut ready_msg = None;
         while let Some(msg) = try_read_backend_message(&mut server_buf) {
             if msg.is_ready_for_query() {
-                debug!(conn_id, "ReadyForQuery buffered — resolving + injecting context");
+                debug!(
+                    conn_id,
+                    "ReadyForQuery buffered — resolving + injecting context"
+                );
                 ready_msg = Some(msg.raw);
                 break;
             }
@@ -492,15 +519,14 @@ async fn handle_passthrough(
 
     let mut context_map = build_static_context(config, context_values);
 
-    if let Some(engine) = resolver_engine {
-        if let Err(e) = engine
+    if let Some(engine) = resolver_engine
+        && let Err(e) = engine
             .resolve_context(&mut server, &mut server_buf, &mut context_map, conn_id)
             .await
-        {
-            error!(conn_id, error = %e, "resolver failed — terminating connection");
-            send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
-            return Ok((HandshakeResult::Done, None));
-        }
+    {
+        error!(conn_id, error = %e, "resolver failed — terminating connection");
+        send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
+        return Ok((HandshakeResult::Done, None));
     }
 
     // ─── Inject all context (static + resolved) ─────────────────────────
@@ -527,6 +553,7 @@ async fn handle_passthrough(
 
 /// Pool mode — pgvpd authenticates client, checks out pooled connection,
 /// resets, resolves context, injects, then enters transparent pipe.
+#[allow(clippy::too_many_arguments)]
 async fn handle_pooled(
     client: &mut ClientStream,
     config: &Config,
@@ -603,15 +630,14 @@ async fn handle_pooled(
 
     let mut context_map = build_static_context(config, context_values);
 
-    if let Some(engine) = resolver_engine {
-        if let Err(e) = engine
+    if let Some(engine) = resolver_engine
+        && let Err(e) = engine
             .resolve_context(&mut server, &mut server_buf, &mut context_map, conn_id)
             .await
-        {
-            error!(conn_id, error = %e, "resolver failed (pooled) — terminating");
-            send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
-            return Ok((HandshakeResult::Done, None));
-        }
+    {
+        error!(conn_id, error = %e, "resolver failed (pooled) — terminating");
+        send_error(client, "FATAL", "XX000", &format!("resolver failed: {e}")).await;
+        return Ok((HandshakeResult::Done, None));
     }
 
     // ─── Inject context ─────────────────────────────────────────────────
@@ -683,11 +709,14 @@ async fn handle_pooled(
         "context set (pooled)"
     );
 
-    Ok((HandshakeResult::Pooled {
-        stream: server,
-        key,
-        pool: Arc::clone(pool),
-    }, None))
+    Ok((
+        HandshakeResult::Pooled {
+            stream: server,
+            key,
+            pool: Arc::clone(pool),
+        },
+        None,
+    ))
 }
 
 /// Build a context map from static (username-extracted) values.

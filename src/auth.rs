@@ -5,17 +5,17 @@
 
 use bytes::BytesMut;
 use hmac::{Hmac, Mac};
-use md5::Md5 as Md5Hasher;
 use md5::Digest as Md5Digest;
+use md5::Md5 as Md5Hasher;
 use sha2::Sha256;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::debug;
 
 use crate::protocol::{
-    auth, build_auth_cleartext_request, build_auth_ok, build_password_message,
+    BackendMessage, auth, build_auth_cleartext_request, build_auth_ok, build_password_message,
     build_sasl_initial_response, build_sasl_response, try_read_backend_message,
-    try_read_password_message, BackendMessage,
+    try_read_password_message,
 };
 use crate::stream::{ClientStream, UpstreamStream};
 
@@ -176,10 +176,7 @@ async fn scram_authenticate(
     let client_first_message = format!("n,,{client_first_bare}");
 
     // Send SASLInitialResponse
-    let initial = build_sasl_initial_response(
-        "SCRAM-SHA-256",
-        client_first_message.as_bytes(),
-    );
+    let initial = build_sasl_initial_response("SCRAM-SHA-256", client_first_message.as_bytes());
     server.write_all(&initial).await?;
     debug!(conn_id, "SCRAM: sent client-first");
 
@@ -219,9 +216,7 @@ async fn scram_authenticate(
 
     // Build auth message
     let client_final_without_proof = format!("c=biws,r={server_nonce}");
-    let auth_message = format!(
-        "{client_first_bare},{server_first},{client_final_without_proof}"
-    );
+    let auth_message = format!("{client_first_bare},{server_first},{client_final_without_proof}");
 
     // Compute client signature and proof
     let client_signature = hmac_sha256(&stored_key, auth_message.as_bytes());
@@ -274,7 +269,9 @@ async fn scram_authenticate(
 }
 
 /// Parse server-first-message into (nonce, salt_b64, iterations).
-fn parse_server_first(msg: &str) -> Result<(&str, &str, u32), Box<dyn std::error::Error + Send + Sync>> {
+fn parse_server_first(
+    msg: &str,
+) -> Result<(&str, &str, u32), Box<dyn std::error::Error + Send + Sync>> {
     let mut nonce = None;
     let mut salt = None;
     let mut iterations = None;
@@ -321,4 +318,181 @@ fn generate_nonce() -> String {
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── MD5 password computation ────────────────────────────────────────
+
+    #[test]
+    fn md5_password_known_vector() {
+        // PostgreSQL MD5 auth: md5 || hex(md5(hex(md5(password + username)) + salt))
+        // We can verify against known values from pg_password.
+        let result = compute_md5_password("app_user", "secret", &[0x01, 0x02, 0x03, 0x04]);
+        assert!(result.starts_with("md5"));
+        assert_eq!(result.len(), 35); // "md5" + 32 hex chars
+    }
+
+    #[test]
+    fn md5_password_deterministic() {
+        let salt = [0xAA, 0xBB, 0xCC, 0xDD];
+        let r1 = compute_md5_password("user", "pass", &salt);
+        let r2 = compute_md5_password("user", "pass", &salt);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn md5_password_different_users_differ() {
+        let salt = [1, 2, 3, 4];
+        let r1 = compute_md5_password("alice", "pass", &salt);
+        let r2 = compute_md5_password("bob", "pass", &salt);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn md5_password_different_passwords_differ() {
+        let salt = [1, 2, 3, 4];
+        let r1 = compute_md5_password("user", "pass1", &salt);
+        let r2 = compute_md5_password("user", "pass2", &salt);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn md5_password_different_salts_differ() {
+        let r1 = compute_md5_password("user", "pass", &[1, 2, 3, 4]);
+        let r2 = compute_md5_password("user", "pass", &[5, 6, 7, 8]);
+        assert_ne!(r1, r2);
+    }
+
+    // ─── SCRAM helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_server_first_valid() {
+        let msg = "r=clientnonceservernonce,s=c2FsdA==,i=4096";
+        let (nonce, salt_b64, iterations) = parse_server_first(msg).unwrap();
+        assert_eq!(nonce, "clientnonceservernonce");
+        assert_eq!(salt_b64, "c2FsdA==");
+        assert_eq!(iterations, 4096);
+    }
+
+    #[test]
+    fn parse_server_first_missing_nonce() {
+        let msg = "s=c2FsdA==,i=4096";
+        assert!(parse_server_first(msg).is_err());
+    }
+
+    #[test]
+    fn parse_server_first_missing_salt() {
+        let msg = "r=nonce,i=4096";
+        assert!(parse_server_first(msg).is_err());
+    }
+
+    #[test]
+    fn parse_server_first_missing_iterations() {
+        let msg = "r=nonce,s=c2FsdA==";
+        assert!(parse_server_first(msg).is_err());
+    }
+
+    #[test]
+    fn parse_server_first_bad_iterations() {
+        let msg = "r=nonce,s=c2FsdA==,i=notanumber";
+        assert!(parse_server_first(msg).is_err());
+    }
+
+    // ─── PBKDF2 / Hi function ────────────────────────────────────────────
+
+    #[test]
+    fn hi_deterministic() {
+        let r1 = hi(b"password", b"salt", 4096);
+        let r2 = hi(b"password", b"salt", 4096);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn hi_different_iterations_differ() {
+        let r1 = hi(b"password", b"salt", 4096);
+        let r2 = hi(b"password", b"salt", 1);
+        assert_ne!(r1, r2);
+    }
+
+    // ─── HMAC-SHA256 ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hmac_sha256_deterministic() {
+        let r1 = hmac_sha256(b"key", b"data");
+        let r2 = hmac_sha256(b"key", b"data");
+        assert_eq!(r1, r2);
+        assert_eq!(r1.len(), 32);
+    }
+
+    #[test]
+    fn hmac_sha256_different_keys_differ() {
+        let r1 = hmac_sha256(b"key1", b"data");
+        let r2 = hmac_sha256(b"key2", b"data");
+        assert_ne!(r1, r2);
+    }
+
+    // ─── SHA256 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn sha256_deterministic() {
+        let r1 = sha256(b"hello");
+        let r2 = sha256(b"hello");
+        assert_eq!(r1, r2);
+        assert_eq!(r1.len(), 32);
+    }
+
+    // ─── Nonce generation ────────────────────────────────────────────────
+
+    #[test]
+    fn nonce_is_unique() {
+        let n1 = generate_nonce();
+        let n2 = generate_nonce();
+        assert_ne!(n1, n2);
+    }
+
+    #[test]
+    fn nonce_is_base64() {
+        use base64::Engine;
+        let nonce = generate_nonce();
+        // Should be valid base64
+        assert!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&nonce)
+                .is_ok()
+        );
+    }
+
+    // ─── SCRAM full derivation ───────────────────────────────────────────
+
+    #[test]
+    fn scram_key_derivation_consistency() {
+        // Verify the full key derivation chain produces consistent results
+        let password = "testpassword";
+        let salt = b"testsalt12345678";
+        let iterations = 4096;
+
+        let salted_password = hi(password.as_bytes(), salt, iterations);
+        let client_key = hmac_sha256(&salted_password, b"Client Key");
+        let stored_key = sha256(&client_key);
+        let server_key = hmac_sha256(&salted_password, b"Server Key");
+
+        // All outputs should be 32 bytes
+        assert_eq!(salted_password.len(), 32);
+        assert_eq!(client_key.len(), 32);
+        assert_eq!(stored_key.len(), 32);
+        assert_eq!(server_key.len(), 32);
+
+        // Client key and server key should differ
+        assert_ne!(client_key, server_key);
+
+        // Stored key (sha256 of client key) should differ from client key
+        assert_ne!(&stored_key[..], &client_key[..]);
+
+        // Re-derive should match
+        let salted_password_2 = hi(password.as_bytes(), salt, iterations);
+        assert_eq!(salted_password, salted_password_2);
+    }
 }

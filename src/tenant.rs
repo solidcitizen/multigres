@@ -6,8 +6,8 @@
 //! count when the connection ends.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tokio::sync::Mutex;
 
@@ -38,7 +38,9 @@ pub struct TenantGuard {
 
 impl Drop for TenantGuard {
     fn drop(&mut self) {
-        self.state.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.state
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -62,17 +64,17 @@ impl TenantRegistry {
 
     /// Check allow/deny list. Returns Err with message if denied.
     pub fn check_access(&self, tenant_id: &str) -> Result<(), String> {
-        if let Some(ref deny) = self.deny {
-            if deny.contains(tenant_id) {
-                Metrics::inc(&self.metrics.tenant_rejected_deny);
-                return Err(format!("tenant '{}' is denied", tenant_id));
-            }
+        if let Some(ref deny) = self.deny
+            && deny.contains(tenant_id)
+        {
+            Metrics::inc(&self.metrics.tenant_rejected_deny);
+            return Err(format!("tenant '{}' is denied", tenant_id));
         }
-        if let Some(ref allow) = self.allow {
-            if !allow.contains(tenant_id) {
-                Metrics::inc(&self.metrics.tenant_rejected_deny);
-                return Err(format!("tenant '{}' is not in allow list", tenant_id));
-            }
+        if let Some(ref allow) = self.allow
+            && !allow.contains(tenant_id)
+        {
+            Metrics::inc(&self.metrics.tenant_rejected_deny);
+            return Err(format!("tenant '{}' is not in allow list", tenant_id));
         }
         Ok(())
     }

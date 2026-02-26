@@ -1,5 +1,9 @@
 # Pgvpd
 
+[![CI](https://github.com/solidcitizen/pgvpd/actions/workflows/ci.yml/badge.svg)](https://github.com/solidcitizen/pgvpd/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/pgvpd.svg)](https://crates.io/crates/pgvpd)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Virtual Private Database for PostgreSQL**
 
 Pgvpd is a TCP proxy that makes tenant identity intrinsic to the database
@@ -45,7 +49,27 @@ Every subsequent query is scoped by RLS. The ORM never knows.
 
 ## Quick Start
 
-### 1. Build
+### 1. Install
+
+**From release binaries** (recommended):
+
+```bash
+# Linux x86_64
+curl -sSL https://github.com/solidcitizen/pgvpd/releases/latest/download/pgvpd-linux-x86_64.tar.gz | tar xz
+sudo mv pgvpd /usr/local/bin/
+
+# macOS Apple Silicon
+curl -sSL https://github.com/solidcitizen/pgvpd/releases/latest/download/pgvpd-macos-aarch64.tar.gz | tar xz
+sudo mv pgvpd /usr/local/bin/
+```
+
+**From crates.io**:
+
+```bash
+cargo install pgvpd
+```
+
+**From source**:
 
 ```bash
 git clone https://github.com/solidcitizen/pgvpd.git
@@ -54,6 +78,12 @@ cargo build --release
 ```
 
 The binary is at `target/release/pgvpd`.
+
+**Docker**:
+
+```bash
+docker run -p 6432:6432 ghcr.io/solidcitizen/pgvpd --upstream-host host.docker.internal
+```
 
 ### 2. Set up Postgres
 
@@ -294,17 +324,29 @@ a direct grant, or are an org admin — all enforced by the database.
 
 Supported path types: `text`, `uuid`, `uuid_array`, `text_array`.
 
-## Integration Tests
+## Tests
 
-End-to-end tests run against a real Postgres instance via Docker:
+**Unit tests**:
+
+```bash
+cargo test
+```
+
+**Integration tests** (end-to-end against a real Postgres via Docker):
 
 ```bash
 ./tests/run.sh
 ```
 
 This starts a Postgres container, loads fixtures, builds pgvpd, and runs
-test suites for passthrough mode, pool mode, and resolvers (13 tests total).
-Requires Docker and `psql`.
+6 test suites: passthrough, pool, resolvers, admin API, tenant isolation,
+and SQL helpers (31 integration tests). Requires Docker and `psql`.
+
+**Benchmarks** (requires running Postgres + pgvpd):
+
+```bash
+cargo bench --bench throughput
+```
 
 ## With Drizzle ORM
 

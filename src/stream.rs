@@ -11,6 +11,7 @@ use tokio_rustls::server::TlsStream as ServerTlsStream;
 
 // ─── Client-facing stream ───────────────────────────────────────────────────
 
+#[allow(clippy::large_enum_variant)]
 pub enum ClientStream {
     Plain(TcpStream),
     Tls(ServerTlsStream<TcpStream>),
@@ -69,6 +70,7 @@ impl Unpin for ClientStream {}
 
 // ─── Upstream-facing stream ─────────────────────────────────────────────────
 
+#[allow(clippy::large_enum_variant)]
 pub enum UpstreamStream {
     Plain(TcpStream),
     Tls(ClientTlsStream<TcpStream>),

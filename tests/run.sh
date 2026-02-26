@@ -11,12 +11,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+CI_MODE=false
+if [ "${1:-}" = "--ci" ]; then
+  CI_MODE=true
+fi
+
 PGVPD_PORT=16432
-PG_PORT=15432
-PG_HOST=127.0.0.1
+PG_PORT=${PGVPD_TEST_PG_PORT:-15432}
+PG_HOST=${PGVPD_TEST_PG_HOST:-127.0.0.1}
 PG_DB=pgvpd_test
 PG_USER=postgres
-PG_PASS=testpass
+PG_PASS=${PGVPD_TEST_PG_PASS:-testpass}
 TEST_UUID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 UNKNOWN_UUID="00000000-0000-0000-0000-000000000000"
 
@@ -37,9 +42,11 @@ cleanup() {
 
 cleanup_all() {
   cleanup
-  echo ""
-  echo "Stopping Postgres..."
-  docker compose -f tests/docker-compose.yml down -v 2>/dev/null || true
+  if [ "$CI_MODE" = false ]; then
+    echo ""
+    echo "Stopping Postgres..."
+    docker compose -f tests/docker-compose.yml down -v 2>/dev/null || true
+  fi
 }
 
 trap cleanup_all EXIT
@@ -55,10 +62,15 @@ fail() {
   echo "  FAIL: $1"
 }
 
+PGVPD_BIN="./target/debug/pgvpd"
+if [ "$CI_MODE" = true ] && [ -f "./target/release/pgvpd" ]; then
+  PGVPD_BIN="./target/release/pgvpd"
+fi
+
 start_pgvpd() {
   local config="$1"
   local logfile="tests/pgvpd-test.log"
-  ./target/debug/pgvpd --config "$config" > "$logfile" 2>&1 &
+  $PGVPD_BIN --config "$config" > "$logfile" 2>&1 &
   PGVPD_PID=$!
   # Wait for pgvpd to start accepting connections
   local retries=0
@@ -104,8 +116,12 @@ run_psql_pw() {
 
 # ─── Start Postgres ───────────────────────────────────────────────────────
 
-echo "Starting Postgres..."
-docker compose -f tests/docker-compose.yml up -d --wait
+if [ "$CI_MODE" = false ]; then
+  echo "Starting Postgres..."
+  docker compose -f tests/docker-compose.yml up -d --wait
+else
+  echo "CI mode: using existing Postgres at $PG_HOST:$PG_PORT"
+fi
 
 echo "Loading fixtures..."
 PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB \

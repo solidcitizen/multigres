@@ -231,10 +231,10 @@ impl Config {
 
         // 1. Config file
         let config_path = Path::new(&cli.config);
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                apply_config_file(&mut config, &content);
-            }
+        if config_path.exists()
+            && let Ok(content) = fs::read_to_string(config_path)
+        {
+            apply_config_file(&mut config, &content);
         }
 
         // 2. Environment variables
@@ -337,10 +337,8 @@ impl Config {
 
     /// Validate configuration. Returns an error message if invalid.
     pub fn validate(&self) -> Result<(), String> {
-        if self.tls_port.is_some() {
-            if self.tls_cert.is_none() || self.tls_key.is_none() {
-                return Err("tls_port requires both tls_cert and tls_key".into());
-            }
+        if self.tls_port.is_some() && (self.tls_cert.is_none() || self.tls_key.is_none()) {
+            return Err("tls_port requires both tls_cert and tls_key".into());
         }
         if self.handshake_timeout_secs == 0 {
             return Err("handshake_timeout must be > 0".into());
@@ -356,10 +354,10 @@ impl Config {
                 return Err("pool_size must be > 0".into());
             }
         }
-        if let Some(ref path) = self.resolvers {
-            if !std::path::Path::new(path).exists() {
-                return Err(format!("resolvers file not found: {}", path));
-            }
+        if let Some(ref path) = self.resolvers
+            && !std::path::Path::new(path).exists()
+        {
+            return Err(format!("resolvers file not found: {}", path));
         }
         if self.tenant_allow.is_some() && self.tenant_deny.is_some() {
             return Err("tenant_allow and tenant_deny cannot both be set".into());
@@ -412,13 +410,11 @@ fn apply_config_file(config: &mut Config, content: &str) {
             }
             "tenant_separator" | "separator" => config.tenant_separator = value,
             "context_variables" | "context" => {
-                config.context_variables =
-                    value.split(',').map(|s| s.trim().to_string()).collect();
+                config.context_variables = value.split(',').map(|s| s.trim().to_string()).collect();
             }
             "value_separator" => config.value_separator = value,
             "superuser_bypass" | "superuser" => {
-                config.superuser_bypass =
-                    value.split(',').map(|s| s.trim().to_string()).collect();
+                config.superuser_bypass = value.split(',').map(|s| s.trim().to_string()).collect();
             }
             "log_level" => config.log_level = value,
             "tls_port" => {
@@ -468,7 +464,8 @@ fn apply_config_file(config: &mut Config, content: &str) {
             }
             "set_role" => config.set_role = Some(value),
             "tenant_allow" => {
-                config.tenant_allow = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+                config.tenant_allow =
+                    Some(value.split(',').map(|s| s.trim().to_string()).collect());
             }
             "tenant_deny" => {
                 config.tenant_deny = Some(value.split(',').map(|s| s.trim().to_string()).collect());
@@ -494,10 +491,10 @@ fn apply_config_file(config: &mut Config, content: &str) {
 }
 
 fn apply_env(config: &mut Config) {
-    if let Ok(v) = std::env::var("PGVPD_PORT") {
-        if let Ok(p) = v.parse() {
-            config.listen_port = p;
-        }
+    if let Ok(v) = std::env::var("PGVPD_PORT")
+        && let Ok(p) = v.parse()
+    {
+        config.listen_port = p;
     }
     if let Ok(v) = std::env::var("PGVPD_HOST") {
         config.listen_host = v;
@@ -505,10 +502,10 @@ fn apply_env(config: &mut Config) {
     if let Ok(v) = std::env::var("PGVPD_UPSTREAM_HOST") {
         config.upstream_host = v;
     }
-    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_PORT") {
-        if let Ok(p) = v.parse() {
-            config.upstream_port = p;
-        }
+    if let Ok(v) = std::env::var("PGVPD_UPSTREAM_PORT")
+        && let Ok(p) = v.parse()
+    {
+        config.upstream_port = p;
     }
     if let Ok(v) = std::env::var("PGVPD_TENANT_SEPARATOR") {
         config.tenant_separator = v;
@@ -525,10 +522,10 @@ fn apply_env(config: &mut Config) {
     if let Ok(v) = std::env::var("PGVPD_LOG_LEVEL") {
         config.log_level = v;
     }
-    if let Ok(v) = std::env::var("PGVPD_TLS_PORT") {
-        if let Ok(p) = v.parse() {
-            config.tls_port = Some(p);
-        }
+    if let Ok(v) = std::env::var("PGVPD_TLS_PORT")
+        && let Ok(p) = v.parse()
+    {
+        config.tls_port = Some(p);
     }
     if let Ok(v) = std::env::var("PGVPD_TLS_CERT") {
         config.tls_cert = Some(v);
@@ -545,18 +542,18 @@ fn apply_env(config: &mut Config) {
     if let Ok(v) = std::env::var("PGVPD_UPSTREAM_TLS_CA") {
         config.upstream_tls_ca = Some(v);
     }
-    if let Ok(v) = std::env::var("PGVPD_HANDSHAKE_TIMEOUT") {
-        if let Ok(t) = v.parse() {
-            config.handshake_timeout_secs = t;
-        }
+    if let Ok(v) = std::env::var("PGVPD_HANDSHAKE_TIMEOUT")
+        && let Ok(t) = v.parse()
+    {
+        config.handshake_timeout_secs = t;
     }
     if let Ok(v) = std::env::var("PGVPD_POOL_MODE") {
         config.pool_mode = parse_pool_mode(&v);
     }
-    if let Ok(v) = std::env::var("PGVPD_POOL_SIZE") {
-        if let Ok(n) = v.parse() {
-            config.pool_size = n;
-        }
+    if let Ok(v) = std::env::var("PGVPD_POOL_SIZE")
+        && let Ok(n) = v.parse()
+    {
+        config.pool_size = n;
     }
     if let Ok(v) = std::env::var("PGVPD_POOL_PASSWORD") {
         config.pool_password = Some(v);
@@ -564,23 +561,23 @@ fn apply_env(config: &mut Config) {
     if let Ok(v) = std::env::var("PGVPD_UPSTREAM_PASSWORD") {
         config.upstream_password = Some(v);
     }
-    if let Ok(v) = std::env::var("PGVPD_POOL_IDLE_TIMEOUT") {
-        if let Ok(t) = v.parse() {
-            config.pool_idle_timeout = t;
-        }
+    if let Ok(v) = std::env::var("PGVPD_POOL_IDLE_TIMEOUT")
+        && let Ok(t) = v.parse()
+    {
+        config.pool_idle_timeout = t;
     }
-    if let Ok(v) = std::env::var("PGVPD_POOL_CHECKOUT_TIMEOUT") {
-        if let Ok(t) = v.parse() {
-            config.pool_checkout_timeout = t;
-        }
+    if let Ok(v) = std::env::var("PGVPD_POOL_CHECKOUT_TIMEOUT")
+        && let Ok(t) = v.parse()
+    {
+        config.pool_checkout_timeout = t;
     }
     if let Ok(v) = std::env::var("PGVPD_RESOLVERS") {
         config.resolvers = Some(v);
     }
-    if let Ok(v) = std::env::var("PGVPD_ADMIN_PORT") {
-        if let Ok(p) = v.parse() {
-            config.admin_port = Some(p);
-        }
+    if let Ok(v) = std::env::var("PGVPD_ADMIN_PORT")
+        && let Ok(p) = v.parse()
+    {
+        config.admin_port = Some(p);
     }
     if let Ok(v) = std::env::var("PGVPD_SET_ROLE") {
         config.set_role = Some(v);
@@ -591,20 +588,20 @@ fn apply_env(config: &mut Config) {
     if let Ok(v) = std::env::var("PGVPD_TENANT_DENY") {
         config.tenant_deny = Some(v.split(',').map(|s| s.trim().to_string()).collect());
     }
-    if let Ok(v) = std::env::var("PGVPD_TENANT_MAX_CONNECTIONS") {
-        if let Ok(n) = v.parse() {
-            config.tenant_max_connections = Some(n);
-        }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_MAX_CONNECTIONS")
+        && let Ok(n) = v.parse()
+    {
+        config.tenant_max_connections = Some(n);
     }
-    if let Ok(v) = std::env::var("PGVPD_TENANT_RATE_LIMIT") {
-        if let Ok(n) = v.parse() {
-            config.tenant_rate_limit = Some(n);
-        }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_RATE_LIMIT")
+        && let Ok(n) = v.parse()
+    {
+        config.tenant_rate_limit = Some(n);
     }
-    if let Ok(v) = std::env::var("PGVPD_TENANT_QUERY_TIMEOUT") {
-        if let Ok(n) = v.parse() {
-            config.tenant_query_timeout = Some(n);
-        }
+    if let Ok(v) = std::env::var("PGVPD_TENANT_QUERY_TIMEOUT")
+        && let Ok(n) = v.parse()
+    {
+        config.tenant_query_timeout = Some(n);
     }
 }
 
@@ -612,5 +609,382 @@ fn parse_pool_mode(value: &str) -> PoolMode {
     match value.trim().to_lowercase().as_str() {
         "session" => PoolMode::Session,
         _ => PoolMode::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Config file parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_basic_config_file() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            r#"
+port = 7777
+upstream_host = db.example.com
+upstream_port = 5433
+log_level = debug
+"#,
+        );
+        assert_eq!(config.listen_port, 7777);
+        assert_eq!(config.upstream_host, "db.example.com");
+        assert_eq!(config.upstream_port, 5433);
+        assert_eq!(config.log_level, "debug");
+    }
+
+    #[test]
+    fn parse_quoted_values() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            r#"
+upstream_host = "db.example.com"
+pool_password = 'my secret'
+"#,
+        );
+        assert_eq!(config.upstream_host, "db.example.com");
+        assert_eq!(config.pool_password, Some("my secret".into()));
+    }
+
+    #[test]
+    fn comments_and_blank_lines_ignored() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            r#"
+# This is a comment
+port = 9999
+
+  # Another comment
+upstream_port = 5433
+"#,
+        );
+        assert_eq!(config.listen_port, 9999);
+        assert_eq!(config.upstream_port, 5433);
+    }
+
+    #[test]
+    fn unknown_keys_ignored() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "unknown_key = some_value\nport = 8888\n");
+        assert_eq!(config.listen_port, 8888);
+    }
+
+    #[test]
+    fn lines_without_equals_ignored() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "no equals sign here\nport = 8888\n");
+        assert_eq!(config.listen_port, 8888);
+    }
+
+    #[test]
+    fn csv_context_variables() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            "context_variables = app.tenant_id, app.user_id, app.role\n",
+        );
+        assert_eq!(
+            config.context_variables,
+            vec!["app.tenant_id", "app.user_id", "app.role"]
+        );
+    }
+
+    #[test]
+    fn pool_mode_parsing() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "pool_mode = session\n");
+        assert_eq!(config.pool_mode, PoolMode::Session);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "pool_mode = none\n");
+        assert_eq!(config.pool_mode, PoolMode::None);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "pool_mode = garbage\n");
+        assert_eq!(config.pool_mode, PoolMode::None);
+    }
+
+    #[test]
+    fn tls_config_from_file() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            "tls_port = 6433\ntls_cert = /path/to/cert.pem\ntls_key = /path/to/key.pem\n",
+        );
+        assert_eq!(config.tls_port, Some(6433));
+        assert_eq!(config.tls_cert, Some("/path/to/cert.pem".into()));
+        assert_eq!(config.tls_key, Some("/path/to/key.pem".into()));
+    }
+
+    #[test]
+    fn upstream_tls_booleans() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls = true\n");
+        assert!(config.upstream_tls);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls = yes\n");
+        assert!(config.upstream_tls);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls = 1\n");
+        assert!(config.upstream_tls);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls = false\n");
+        assert!(!config.upstream_tls);
+
+        // upstream_tls_verify defaults to true; setting false flips it
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls_verify = false\n");
+        assert!(!config.upstream_tls_verify);
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "upstream_tls_verify = no\n");
+        assert!(!config.upstream_tls_verify);
+    }
+
+    #[test]
+    fn tenant_lists_from_file() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "tenant_allow = alpha, beta, gamma\n");
+        assert_eq!(
+            config.tenant_allow,
+            Some(vec!["alpha".into(), "beta".into(), "gamma".into()])
+        );
+
+        let mut config = Config::default();
+        apply_config_file(&mut config, "tenant_deny = bad_tenant\n");
+        assert_eq!(config.tenant_deny, Some(vec!["bad_tenant".into()]));
+    }
+
+    #[test]
+    fn all_numeric_fields_parse() {
+        let mut config = Config::default();
+        apply_config_file(
+            &mut config,
+            r#"
+pool_size = 50
+pool_idle_timeout = 600
+pool_checkout_timeout = 10
+handshake_timeout = 60
+tenant_max_connections = 100
+tenant_rate_limit = 50
+tenant_query_timeout = 30
+"#,
+        );
+        assert_eq!(config.pool_size, 50);
+        assert_eq!(config.pool_idle_timeout, 600);
+        assert_eq!(config.pool_checkout_timeout, 10);
+        assert_eq!(config.handshake_timeout_secs, 60);
+        assert_eq!(config.tenant_max_connections, Some(100));
+        assert_eq!(config.tenant_rate_limit, Some(50));
+        assert_eq!(config.tenant_query_timeout, Some(30));
+    }
+
+    #[test]
+    fn invalid_numeric_values_are_ignored() {
+        let mut config = Config::default();
+        apply_config_file(&mut config, "port = not_a_number\n");
+        assert_eq!(config.listen_port, 6432); // stays at default
+    }
+
+    #[test]
+    fn key_aliases() {
+        // "listen_port" and "port" are aliases
+        let mut config = Config::default();
+        apply_config_file(&mut config, "listen_port = 7777\n");
+        assert_eq!(config.listen_port, 7777);
+
+        // "host" and "listen_host" are aliases
+        let mut config = Config::default();
+        apply_config_file(&mut config, "host = 0.0.0.0\n");
+        assert_eq!(config.listen_host, "0.0.0.0");
+
+        // "separator" and "tenant_separator" are aliases
+        let mut config = Config::default();
+        apply_config_file(&mut config, "separator = +\n");
+        assert_eq!(config.tenant_separator, "+");
+
+        // "superuser" and "superuser_bypass" are aliases
+        let mut config = Config::default();
+        apply_config_file(&mut config, "superuser = admin, root\n");
+        assert_eq!(config.superuser_bypass, vec!["admin", "root"]);
+    }
+
+    // ─── Env var overrides ───────────────────────────────────────────────
+
+    #[test]
+    fn env_var_overrides() {
+        // Set an env var, apply it, check it took effect
+        let mut config = Config::default();
+        apply_config_file(&mut config, "port = 7777\n");
+        assert_eq!(config.listen_port, 7777);
+
+        // Env var should override config file
+        // SAFETY: test runs single-threaded (cargo test default), no concurrent env access
+        unsafe { std::env::set_var("PGVPD_PORT", "8888") };
+        apply_env(&mut config);
+        assert_eq!(config.listen_port, 8888);
+        unsafe { std::env::remove_var("PGVPD_PORT") };
+    }
+
+    #[test]
+    fn env_var_tenant_settings() {
+        let mut config = Config::default();
+        // SAFETY: test runs single-threaded (cargo test default), no concurrent env access
+        unsafe { std::env::set_var("PGVPD_TENANT_ALLOW", "t1,t2,t3") };
+        apply_env(&mut config);
+        assert_eq!(
+            config.tenant_allow,
+            Some(vec!["t1".into(), "t2".into(), "t3".into()])
+        );
+        unsafe { std::env::remove_var("PGVPD_TENANT_ALLOW") };
+    }
+
+    // ─── Validation ──────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_default_config_passes() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_tls_port_without_cert_fails() {
+        let mut config = Config::default();
+        config.tls_port = Some(6433);
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("tls_cert"));
+    }
+
+    #[test]
+    fn validate_tls_port_with_cert_and_key_passes() {
+        let mut config = Config::default();
+        config.tls_port = Some(6433);
+        config.tls_cert = Some("/tmp/cert.pem".into());
+        config.tls_key = Some("/tmp/key.pem".into());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_zero_handshake_timeout_fails() {
+        let mut config = Config::default();
+        config.handshake_timeout_secs = 0;
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("handshake_timeout"));
+    }
+
+    #[test]
+    fn validate_session_pool_without_password_fails() {
+        let mut config = Config::default();
+        config.pool_mode = PoolMode::Session;
+        config.upstream_password = Some("pass".into());
+        // Missing pool_password
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("pool_password"));
+    }
+
+    #[test]
+    fn validate_session_pool_without_upstream_password_fails() {
+        let mut config = Config::default();
+        config.pool_mode = PoolMode::Session;
+        config.pool_password = Some("pass".into());
+        // Missing upstream_password
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("upstream_password"));
+    }
+
+    #[test]
+    fn validate_session_pool_with_zero_pool_size_fails() {
+        let mut config = Config::default();
+        config.pool_mode = PoolMode::Session;
+        config.pool_password = Some("pass".into());
+        config.upstream_password = Some("pass".into());
+        config.pool_size = 0;
+        assert!(config.validate().is_err());
+        assert!(config.validate().unwrap_err().contains("pool_size"));
+    }
+
+    #[test]
+    fn validate_session_pool_fully_configured_passes() {
+        let mut config = Config::default();
+        config.pool_mode = PoolMode::Session;
+        config.pool_password = Some("pass".into());
+        config.upstream_password = Some("pass".into());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_resolvers_file_not_found_fails() {
+        let mut config = Config::default();
+        config.resolvers = Some("/nonexistent/path/resolvers.toml".into());
+        assert!(config.validate().is_err());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("resolvers file not found")
+        );
+    }
+
+    #[test]
+    fn validate_both_allow_and_deny_fails() {
+        let mut config = Config::default();
+        config.tenant_allow = Some(vec!["a".into()]);
+        config.tenant_deny = Some(vec!["b".into()]);
+        assert!(config.validate().is_err());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("cannot both be set")
+        );
+    }
+
+    // ─── has_tenant_limits ───────────────────────────────────────────────
+
+    #[test]
+    fn has_tenant_limits_detection() {
+        let config = Config::default();
+        assert!(!config.has_tenant_limits());
+
+        let mut config = Config::default();
+        config.tenant_allow = Some(vec!["a".into()]);
+        assert!(config.has_tenant_limits());
+
+        let mut config = Config::default();
+        config.tenant_deny = Some(vec!["b".into()]);
+        assert!(config.has_tenant_limits());
+
+        let mut config = Config::default();
+        config.tenant_max_connections = Some(10);
+        assert!(config.has_tenant_limits());
+
+        let mut config = Config::default();
+        config.tenant_rate_limit = Some(5);
+        assert!(config.has_tenant_limits());
+    }
+
+    // ─── parse_pool_mode ─────────────────────────────────────────────────
+
+    #[test]
+    fn pool_mode_case_insensitive() {
+        assert_eq!(parse_pool_mode("Session"), PoolMode::Session);
+        assert_eq!(parse_pool_mode("SESSION"), PoolMode::Session);
+        assert_eq!(parse_pool_mode("  session  "), PoolMode::Session);
+        assert_eq!(parse_pool_mode("none"), PoolMode::None);
+        assert_eq!(parse_pool_mode("anything_else"), PoolMode::None);
+    }
+
+    #[test]
+    fn pool_mode_display() {
+        assert_eq!(format!("{}", PoolMode::None), "none");
+        assert_eq!(format!("{}", PoolMode::Session), "session");
     }
 }

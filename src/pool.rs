@@ -16,9 +16,7 @@ use crate::auth;
 use crate::config::Config;
 use crate::connection::connect_upstream;
 use crate::metrics::Metrics;
-use crate::protocol::{
-    build_query_message, build_startup_message, try_read_backend_message,
-};
+use crate::protocol::{build_query_message, build_startup_message, try_read_backend_message};
 use crate::stream::UpstreamStream;
 
 /// Pool key — identifies a bucket of reusable connections.
@@ -85,7 +83,11 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn new(config: Arc<Config>, upstream_tls: Option<Arc<ClientConfig>>, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        upstream_tls: Option<Arc<ClientConfig>>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             buckets: Mutex::new(HashMap::new()),
             config,
@@ -128,15 +130,15 @@ impl Pool {
                 if let Some(mut conn) = bucket.idle.pop_front() {
                     conn.last_used = Instant::now();
                     // Re-attach cached handshake data if the conn lost it (recycled)
-                    if conn.param_statuses.is_empty() {
-                        if let Some(ref cached) = bucket.cached_param_statuses {
-                            conn.param_statuses = cached.clone();
-                        }
+                    if conn.param_statuses.is_empty()
+                        && let Some(ref cached) = bucket.cached_param_statuses
+                    {
+                        conn.param_statuses = cached.clone();
                     }
-                    if conn.backend_key_data.is_empty() {
-                        if let Some(ref cached) = bucket.cached_backend_key_data {
-                            conn.backend_key_data = cached.clone();
-                        }
+                    if conn.backend_key_data.is_empty()
+                        && let Some(ref cached) = bucket.cached_backend_key_data
+                    {
+                        conn.backend_key_data = cached.clone();
                     }
                     Metrics::inc(&self.metrics.pool_reuses);
                     Metrics::inc(&self.metrics.pool_checkouts);
@@ -154,13 +156,12 @@ impl Pool {
                         Ok(conn) => {
                             // Cache handshake data on first connection for this bucket
                             let mut buckets = self.buckets.lock().await;
-                            if let Some(bucket) = buckets.get_mut(key) {
-                                if bucket.cached_param_statuses.is_none() {
-                                    bucket.cached_param_statuses =
-                                        Some(conn.param_statuses.clone());
-                                    bucket.cached_backend_key_data =
-                                        Some(conn.backend_key_data.clone());
-                                }
+                            if let Some(bucket) = buckets.get_mut(key)
+                                && bucket.cached_param_statuses.is_none()
+                            {
+                                bucket.cached_param_statuses = Some(conn.param_statuses.clone());
+                                bucket.cached_backend_key_data =
+                                    Some(conn.backend_key_data.clone());
                             }
                             Metrics::inc(&self.metrics.pool_checkouts);
                             return Ok(conn);
@@ -350,7 +351,9 @@ impl Pool {
 
             for (key, bucket) in buckets.iter_mut() {
                 let before = bucket.idle.len();
-                bucket.idle.retain(|conn| conn.last_used.elapsed() < idle_timeout);
+                bucket
+                    .idle
+                    .retain(|conn| conn.last_used.elapsed() < idle_timeout);
                 let reaped = before - bucket.idle.len();
                 if reaped > 0 {
                     bucket.total = bucket.total.saturating_sub(reaped as u32);

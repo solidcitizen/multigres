@@ -7,10 +7,7 @@ use std::io::{self, BufReader};
 use std::sync::Arc;
 
 /// Build a `ServerConfig` for TLS termination (client → Pgvpd).
-pub fn build_server_config(
-    cert_path: &str,
-    key_path: &str,
-) -> io::Result<Arc<ServerConfig>> {
+pub fn build_server_config(cert_path: &str, key_path: &str) -> io::Result<Arc<ServerConfig>> {
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
@@ -26,10 +23,7 @@ pub fn build_server_config(
 ///
 /// - `verify`: if false, skip certificate verification (for dev/self-signed)
 /// - `ca_path`: optional path to a custom CA certificate
-pub fn build_client_config(
-    verify: bool,
-    ca_path: Option<&str>,
-) -> io::Result<Arc<ClientConfig>> {
+pub fn build_client_config(verify: bool, ca_path: Option<&str>) -> io::Result<Arc<ClientConfig>> {
     let config = if !verify {
         ClientConfig::builder()
             .dangerous()
@@ -67,18 +61,20 @@ pub fn parse_server_name(host: &str) -> io::Result<ServerName<'static>> {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn load_certs(path: &str) -> io::Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(path)
-        .map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?;
+    let file = File::open(path).map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?;
     let mut reader = BufReader::new(file);
     rustls_pemfile::certs(&mut reader).collect()
 }
 
 fn load_private_key(path: &str) -> io::Result<PrivateKeyDer<'static>> {
-    let file = File::open(path)
-        .map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?;
+    let file = File::open(path).map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?;
     let mut reader = BufReader::new(file);
-    rustls_pemfile::private_key(&mut reader)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("{path}: no private key found")))
+    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{path}: no private key found"),
+        )
+    })
 }
 
 // ─── NoVerifier (skip-verify mode) ──────────────────────────────────────────

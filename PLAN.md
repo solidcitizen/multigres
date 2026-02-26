@@ -245,12 +245,23 @@ RFC: `docs/rfcs/rfc-context-resolvers.md`
 - `pgvpd_protect_acl()` for multi-path RLS policies
 - Installable via `sql/helpers.sql`
 
-### v1.0 — Production Ready
-- Battle-tested with real workloads
-- Comprehensive test suite (unit, integration, chaos)
-- Performance benchmarks vs direct connection
-- Documentation site
-- Published to crates.io and as prebuilt binaries
+### v0.8 — CI + Release Infrastructure ✓
+Everything needed so the project can be properly released and maintained.
+- **Housekeeping**: `Cargo.toml` metadata (repository, homepage, keywords, categories), MIT `LICENSE` file, `CHANGELOG.md` (retroactive v0.1–v0.7)
+- **GitHub Actions CI**: cargo check, test, clippy, fmt, integration tests via Docker service container
+- **GitHub Actions Release**: on tag push — cross-compile Linux/macOS binaries, GitHub Release, crates.io publish
+- **Dockerfile**: multi-stage build (rust builder → slim runtime)
+
+### v0.9 — Hardening
+Unit tests for critical code paths that only have integration coverage today.
+- **Protocol parsing tests** (`src/protocol.rs`): malformed startup messages, backend message framing edge cases, SQL escaping
+- **Config validation tests** (`src/config.rs`): missing required fields, invalid combinations, env var override precedence, malformed config
+- **Auth edge case tests** (`src/auth.rs`): MD5 hash computation, SCRAM message parsing
+- **Connection throughput benchmark** (`benches/throughput.rs`): passthrough latency vs direct connection
+- **README update**: CI badge, benchmark results, install-from-release instructions
+
+### v1.0 — Release
+Version bump + tag push. Release automation publishes binaries and the crate. After v0.8 (infrastructure) and v0.9 (hardening), v1.0 is a ceremony — the code has been running in production since v0.7.
 
 ## Design Principles
 
