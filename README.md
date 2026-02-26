@@ -104,13 +104,20 @@ Postgres directly. No code changes. No middleware. No connection pinning.
 
 ## How It Works
 
+**Passthrough mode** (default):
+
 1. **Client connects** with username `app_user.acme`
 2. **Pgvpd parses** the tenant ID (`acme`) from the username
 3. **Username is rewritten** to `app_user` for upstream Postgres
 4. **Auth is proxied** transparently (supports cleartext, MD5, SCRAM-SHA-256)
-5. **After auth**, Pgvpd injects `SET app.current_tenant_id = 'acme'`
-6. **All traffic** is then piped transparently — zero overhead
-7. **RLS policies** on every tenant-scoped table enforce isolation
+5. **Context resolvers** run (if configured) — SQL queries that derive additional session variables from database state
+6. **After auth**, Pgvpd injects `SET app.current_tenant_id = 'acme'` (plus any resolver-derived variables)
+7. **All traffic** is then piped transparently — zero overhead (`tokio::io::copy_bidirectional`)
+8. **RLS policies** on every tenant-scoped table enforce isolation
+
+**Pool mode** (`pool_mode = session`):
+
+Steps 1–2 are the same, but Pgvpd authenticates the client itself (cleartext), checks out a pooled upstream connection, resets it (`DISCARD ALL`), resolves + injects context, and uses a message-aware pipe (`pipe_pooled`) that intercepts Terminate messages so the upstream connection can be returned to the pool. On disconnect, the connection is cleaned up with `ROLLBACK` → `DISCARD ALL` and returned to the idle pool.
 
 ### Fail-Closed Guarantee
 
@@ -142,6 +149,21 @@ superuser_bypass = postgres
 | `value_separator` | `:` | `PGVPD_VALUE_SEPARATOR` | Separator for multiple values |
 | `superuser_bypass` | `postgres` | `PGVPD_SUPERUSER_BYPASS` | Bypass usernames (comma-separated) |
 | `log_level` | `info` | `PGVPD_LOG_LEVEL` | debug/info/warn/error |
+| `handshake_timeout` | 30 | `PGVPD_HANDSHAKE_TIMEOUT` | Max seconds for startup + auth + injection |
+| `tls_port` | *(disabled)* | `PGVPD_TLS_PORT` | TLS listen port (requires tls_cert + tls_key) |
+| `tls_cert` | — | `PGVPD_TLS_CERT` | Path to PEM certificate for TLS termination |
+| `tls_key` | — | `PGVPD_TLS_KEY` | Path to PEM private key for TLS termination |
+| `upstream_tls` | false | `PGVPD_UPSTREAM_TLS` | Connect to upstream Postgres over TLS |
+| `upstream_tls_verify` | true | `PGVPD_UPSTREAM_TLS_VERIFY` | Verify upstream TLS certificate |
+| `upstream_tls_ca` | — | `PGVPD_UPSTREAM_TLS_CA` | Custom CA cert for upstream TLS |
+| `pool_mode` | none | `PGVPD_POOL_MODE` | `none` (passthrough) or `session` (pooling) |
+| `pool_size` | 20 | `PGVPD_POOL_SIZE` | Max upstream connections per (database, role) |
+| `pool_password` | — | `PGVPD_POOL_PASSWORD` | Password clients must provide in pool mode |
+| `upstream_password` | — | `PGVPD_UPSTREAM_PASSWORD` | Password pgvpd uses to authenticate upstream |
+| `pool_idle_timeout` | 300 | `PGVPD_POOL_IDLE_TIMEOUT` | Seconds idle before pooled connection is closed |
+| `pool_checkout_timeout` | 5 | `PGVPD_POOL_CHECKOUT_TIMEOUT` | Seconds to wait when pool is full |
+| `resolvers` | — | `PGVPD_RESOLVERS` | Path to context resolver TOML file |
+| `admin_port` | *(disabled)* | `PGVPD_ADMIN_PORT` | HTTP port for admin API (health, metrics, status) |
 
 Configuration is loaded in priority order: defaults → config file → environment variables → CLI flags.
 
@@ -162,6 +184,75 @@ SET app.current_list_id = 'list123';
 SET app.current_user_id = 'user456';
 SET ROLE app_user;
 ```
+
+## Connection Pooling
+
+With `pool_mode = session`, Pgvpd maintains a pool of upstream Postgres
+connections keyed by `(database, role)`. Clients authenticate to Pgvpd
+directly (cleartext), and Pgvpd checks out a pooled upstream connection,
+resets it, injects context, and pipes traffic using a message-aware
+forwarder that intercepts Terminate messages to preserve the upstream
+connection.
+
+```ini
+# pgvpd.conf
+pool_mode = session
+pool_size = 20
+pool_password = secret
+upstream_password = upstream_secret
+pool_idle_timeout = 300
+pool_checkout_timeout = 5
+```
+
+On disconnect, connections are cleaned up (`ROLLBACK` → `DISCARD ALL`) and
+returned to the idle pool. An idle reaper closes connections that have been
+unused longer than `pool_idle_timeout`. Superuser bypass connections are
+never pooled.
+
+## Context Resolvers
+
+Resolvers are SQL queries that run after authentication to derive additional
+session variables from database state — the Postgres equivalent of Oracle's
+Real Application Security. The application provides identity (a user UUID);
+the database resolves the full security context (org membership, team grants,
+ACLs).
+
+```toml
+# resolvers.toml
+[[resolver]]
+name = "org_membership"
+query = "SELECT org_id, role FROM org_members WHERE user_id = $1"
+params = ["app.current_user_id"]
+inject = { "app.org_id" = "org_id", "app.org_role" = "role" }
+cache_ttl = 300
+```
+
+Configure with `resolvers = resolvers.toml` in your config file. Resolvers
+execute in dependency order, chain results via bind parameters, and cache
+results with configurable TTL. Failed required resolvers terminate the
+connection (fail-closed).
+
+## TLS
+
+**TLS termination** (client → Pgvpd): clients connect over TLS to
+`tls_port`. Requires `tls_cert` and `tls_key` pointing to PEM files. The
+plain listener continues on `port`.
+
+**TLS origination** (Pgvpd → upstream): set `upstream_tls = true` to connect
+to Postgres over TLS. Use `upstream_tls_verify = false` for self-signed
+certs, or `upstream_tls_ca` for a custom CA.
+
+## Integration Tests
+
+End-to-end tests run against a real Postgres instance via Docker:
+
+```bash
+./tests/run.sh
+```
+
+This starts a Postgres container, loads fixtures, builds pgvpd, and runs
+test suites for passthrough mode, pool mode, and resolvers (13 tests total).
+Requires Docker and `psql`.
 
 ## With Drizzle ORM
 
@@ -208,11 +299,20 @@ for:
 - Parsing `StartupMessage` to extract the tenant-encoded username
 - Rewriting the username before forwarding to upstream Postgres
 - Relaying SCRAM-SHA-256 (and other) authentication exchanges
+- Executing context resolvers (SQL queries to derive session state)
 - Injecting `SET` commands after authentication
-- Zero-copy bidirectional piping for all subsequent traffic
+- Bidirectional piping for all subsequent traffic
 
-After the initial handshake (~3 messages), Pgvpd adds **zero overhead** —
-it's a direct TCP pipe via `tokio::io::copy_bidirectional`.
+In passthrough mode, after the initial handshake (~3 messages), Pgvpd
+adds **zero overhead** — it's a direct TCP pipe via
+`tokio::io::copy_bidirectional`. In pool mode, the pipe (`pipe_pooled`) does
+message-aware forwarding to intercept Terminate messages and preserve
+upstream connections for reuse.
+
+Components: `protocol.rs` (wire protocol), `connection.rs` (state machine),
+`auth.rs` (authentication), `pool.rs` (connection pool), `resolver.rs`
+(context resolvers), `stream.rs` (plain/TLS abstraction), `tls.rs` (TLS
+config), `admin.rs` (HTTP admin API), `metrics.rs` (observability counters).
 
 Single static binary. No runtime dependencies.
 
