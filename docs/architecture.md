@@ -261,11 +261,16 @@ src/
 └── config.rs         Configuration from file/env/CLI (clap)
 
 sql/
-└── setup.sql         Postgres-side setup:
-                        - app_user role (NOSUPERUSER NOBYPASSRLS)
-                        - current_tenant_id() function (fail-closed)
-                        - pgvpd_protect() helper
-                        - pgvpd_status() verification
+├── setup.sql         Postgres-side setup:
+│                       - app_user role (NOSUPERUSER NOBYPASSRLS)
+│                       - current_tenant_id() function (fail-closed)
+│                       - pgvpd_protect() helper
+│                       - pgvpd_status() verification
+└── helpers.sql       RLS convenience functions:
+                        - pgvpd_context() — fail-closed session var read
+                        - pgvpd_context_array() / _uuid_array() — parse CSV vars
+                        - pgvpd_context_contains() / _text_contains() — membership check
+                        - pgvpd_protect_acl() — multi-path RBAC policy builder
 
 tests/
 ├── run.sh            Integration test runner (Docker + psql)

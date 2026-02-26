@@ -63,6 +63,26 @@ GRANT SELECT ON teams TO app_user;
 -- Grant sequence usage for tenants table
 GRANT USAGE, SELECT ON SEQUENCE tenants_id_seq TO app_user;
 
+-- ─── 5. Install SQL helpers ────────────────────────────────────────────────
+
+\i sql/helpers.sql
+
+-- ─── 6. Create test table for pgvpd_protect_acl ──────────────────────────
+
+CREATE TABLE IF NOT EXISTS acl_cases (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id uuid,
+  org_id uuid,
+  title text NOT NULL
+);
+
+INSERT INTO acl_cases (id, creator_id, org_id, title) VALUES
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '11111111-2222-3333-4444-555555555555', 'Case owned by test user'),
+  ('aaaaaaaa-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000099', '11111111-2222-3333-4444-555555555555', 'Case in same org'),
+  ('aaaaaaaa-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000099', '99999999-9999-9999-9999-999999999999', 'Case in other org');
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON acl_cases TO app_user;
+
 -- ─── Done ─────────────────────────────────────────────────────────────────
 
 DO $$ BEGIN RAISE NOTICE 'Test fixtures loaded.'; END $$;
