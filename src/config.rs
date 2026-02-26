@@ -122,6 +122,10 @@ pub struct Cli {
     /// Path to context resolver TOML file
     #[arg(long)]
     pub resolvers: Option<String>,
+
+    /// HTTP port for admin API (health, metrics, status)
+    #[arg(long)]
+    pub admin_port: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +153,7 @@ pub struct Config {
     pub pool_idle_timeout: u64,
     pub pool_checkout_timeout: u64,
     pub resolvers: Option<String>,
+    pub admin_port: Option<u16>,
 }
 
 impl Default for Config {
@@ -177,6 +182,7 @@ impl Default for Config {
             pool_idle_timeout: 300,
             pool_checkout_timeout: 5,
             resolvers: None,
+            admin_port: None,
         }
     }
 }
@@ -267,6 +273,9 @@ impl Config {
         }
         if let Some(v) = cli.resolvers {
             config.resolvers = Some(v);
+        }
+        if let Some(v) = cli.admin_port {
+            config.admin_port = Some(v);
         }
 
         config
@@ -387,6 +396,11 @@ fn apply_config_file(config: &mut Config, content: &str) {
                 }
             }
             "resolvers" => config.resolvers = Some(value),
+            "admin_port" => {
+                if let Ok(v) = value.parse() {
+                    config.admin_port = Some(v);
+                }
+            }
             _ => {}
         }
     }
@@ -475,6 +489,11 @@ fn apply_env(config: &mut Config) {
     }
     if let Ok(v) = std::env::var("PGVPD_RESOLVERS") {
         config.resolvers = Some(v);
+    }
+    if let Ok(v) = std::env::var("PGVPD_ADMIN_PORT") {
+        if let Ok(p) = v.parse() {
+            config.admin_port = Some(p);
+        }
     }
 }
 

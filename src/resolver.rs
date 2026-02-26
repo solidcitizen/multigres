@@ -9,11 +9,13 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
+use crate::metrics::Metrics;
 use crate::protocol::{backend, build_query_message, escape_set_value, try_read_backend_message};
 use crate::stream::UpstreamStream;
 
@@ -69,10 +71,11 @@ struct CacheEntry {
 pub struct ResolverEngine {
     pub resolvers: Vec<ResolverDef>,
     cache: Mutex<HashMap<(String, u64), CacheEntry>>,
+    metrics: Option<Arc<Metrics>>,
 }
 
 /// Load resolvers from a TOML file, validate, and topologically sort.
-pub fn load_resolvers(path: &str) -> Result<ResolverEngine, String> {
+pub fn load_resolvers(path: &str, metrics: Option<Arc<Metrics>>) -> Result<ResolverEngine, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read resolver file '{}': {}", path, e))?;
 
@@ -130,6 +133,7 @@ pub fn load_resolvers(path: &str) -> Result<ResolverEngine, String> {
     Ok(ResolverEngine {
         resolvers: sorted,
         cache: Mutex::new(HashMap::new()),
+        metrics,
     })
 }
 
@@ -182,6 +186,11 @@ fn topological_sort(defs: &[ResolverDef]) -> Result<Vec<ResolverDef>, String> {
 // ─── Resolver Execution ─────────────────────────────────────────────────────
 
 impl ResolverEngine {
+    /// Current cache size (for admin API).
+    pub async fn cache_size(&self) -> usize {
+        self.cache.lock().await.len()
+    }
+
     /// Execute all resolvers in order, populating `context` with resolved values.
     /// `context` comes in with static context from username extraction.
     pub async fn resolve_context(
@@ -191,7 +200,7 @@ impl ResolverEngine {
         context: &mut HashMap<String, Option<String>>,
         conn_id: u64,
     ) -> Result<(), io::Error> {
-        for def in &self.resolvers {
+        for (resolver_idx, def) in self.resolvers.iter().enumerate() {
             // Collect input param values
             let mut skip = false;
             let mut input_values: Vec<Option<String>> = Vec::with_capacity(def.params.len());
@@ -236,6 +245,9 @@ impl ResolverEngine {
                 let cache = self.cache.lock().await;
                 if let Some(entry) = cache.get(&key) {
                     if entry.expires_at > Instant::now() {
+                        if let Some(m) = &self.metrics {
+                            Metrics::inc(&m.resolver_cache_hits);
+                        }
                         debug!(conn_id, resolver = %def.name, "cache hit");
                         for (session_var, col_name) in &def.inject {
                             let val = entry.values.get(col_name).cloned().flatten();
@@ -251,7 +263,23 @@ impl ResolverEngine {
             };
 
             // Execute resolver query
-            let result = execute_resolver(server, server_buf, def, &input_values, conn_id).await?;
+            if let Some(m) = &self.metrics {
+                Metrics::inc(&m.resolver_cache_misses);
+                if let Some(counter) = m.resolver_executions.get(resolver_idx) {
+                    Metrics::inc(counter);
+                }
+            }
+            let result = match execute_resolver(server, server_buf, def, &input_values, conn_id).await {
+                Ok(r) => r,
+                Err(e) => {
+                    if let Some(m) = &self.metrics {
+                        if let Some(counter) = m.resolver_errors.get(resolver_idx) {
+                            Metrics::inc(counter);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
 
             match result {
                 None => {

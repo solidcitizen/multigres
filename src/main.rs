@@ -1,6 +1,8 @@
+mod admin;
 mod auth;
 mod config;
 mod connection;
+mod metrics;
 mod pool;
 mod protocol;
 mod resolver;
@@ -12,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 const BANNER: &str = r#"
   ╔══════════════════════════════════════════════════╗
-  ║                  P G V P D  v0.4                 ║
+  ║                  P G V P D  v0.5                 ║
   ║      Virtual Private Database for PostgreSQL     ║
   ║                    [ Rust ]                      ║
   ╚══════════════════════════════════════════════════╝
