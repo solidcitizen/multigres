@@ -240,7 +240,7 @@ RFC: `docs/rfcs/rfc-context-resolvers.md`
 - **TenantRegistry**: shared per-tenant state with lazy creation, no new crate dependencies
 - **Metrics**: `pgvpd_tenant_rejected_total{reason=deny|limit|rate}`, `pgvpd_tenant_timeouts_total`
 
-### v0.7 — SQL Helpers + Convenience
+### v0.7 — SQL Helpers + Convenience ✓
 - `pgvpd_context()`, `pgvpd_context_array()`, `pgvpd_context_contains()`
 - `pgvpd_protect_acl()` for multi-path RLS policies
 - Installable via `sql/helpers.sql`
