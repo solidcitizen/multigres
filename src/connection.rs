@@ -444,11 +444,12 @@ async fn handle_passthrough(
 
     // ─── Inject all context (static + resolved) ─────────────────────────
 
+    let target_role = config.set_role.as_deref().unwrap_or(actual_user);
     inject_context_from_map(
         &mut server,
         &mut server_buf,
         client,
-        actual_user,
+        target_role,
         &context_map,
         &buffered_ready,
         conn_id,
@@ -566,7 +567,8 @@ async fn handle_pooled(
             }
         }
     }
-    set_clauses.push(format!("SET ROLE {}", quote_ident(actual_user)?));
+    let target_role = config.set_role.as_deref().unwrap_or(actual_user);
+    set_clauses.push(format!("SET ROLE {}", quote_ident(target_role)?));
     let sql = set_clauses.join("; ") + ";";
 
     debug!(conn_id, sql = %sql, "pool: inject context");
@@ -616,7 +618,7 @@ async fn handle_pooled(
     info!(
         conn_id,
         context = %context_summary,
-        role = actual_user,
+        role = target_role,
         "context set (pooled)"
     );
 

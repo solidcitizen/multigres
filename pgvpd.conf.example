@@ -42,6 +42,15 @@
 #   app.current_user_id = 'user456'
 # value_separator = :
 
+# ─── Role Override ──────────────────────────────────────────
+
+# Override which role pgvpd switches to after authentication.
+# By default, pgvpd does SET ROLE {rewritten_username}.
+# Set this to use an existing NOLOGIN role (e.g., Supabase's
+# "authenticated") so existing RLS policies work unchanged.
+# Requires: GRANT <set_role> TO <login_role> on the database side.
+# set_role = authenticated
+
 # ─── Access Control ─────────────────────────────────────────
 
 # Usernames that bypass tenant extraction entirely.
