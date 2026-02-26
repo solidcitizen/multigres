@@ -32,14 +32,14 @@ connection pool, every query runs in the same security context. Setting
 per-request session variables requires manual connection pinning that the
 ORM wasn't designed for, and a single missed code path fails open.
 
-Platforms like Supabase work around this by routing queries through a
-REST/GraphQL gateway that sets RLS context per request. But this means
-giving up the ORM entirely — you query through the gateway's API, not
-SQL. You lose joins, transactions, migrations, and the full
-expressiveness of Postgres. You also inherit the gateway's limitations:
-response size caps, restricted query patterns, and another service in the
-critical path. The database has a policy engine; you shouldn't need a
-middleware layer to use it.
+Platforms like Supabase (via PostgREST) and Hasura work around this by
+routing queries through a REST or GraphQL gateway that sets RLS context
+per request. But this means giving up the ORM entirely — you query
+through the gateway's API, not SQL. You lose joins, transactions,
+migrations, and the full expressiveness of Postgres. You also inherit the
+gateway's limitations: response size caps, restricted query patterns, and
+another service in the critical path. The database has a policy engine;
+you shouldn't need a middleware layer to use it.
 
 ## The Solution
 
