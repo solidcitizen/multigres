@@ -2,6 +2,19 @@
 
 All notable changes to pgvpd are documented here.
 
+## [0.9.0] — 2026-02-26
+
+### Added
+- Unit tests for `protocol.rs` (28 tests: startup parsing, backend message framing, SQL escaping)
+- Unit tests for `config.rs` (31 tests: file parsing, validation, env var overrides)
+- Unit tests for `auth.rs` (19 tests: MD5 hash, SCRAM parsing, key derivation)
+- Connection throughput benchmark (`benches/throughput.rs`)
+
+### Changed
+- Unit test count: 17 → 89
+- README: updated test counts, added install-from-release instructions
+- Fixed all pre-existing clippy warnings across the codebase
+
 ## [0.8.0] — 2026-02-25
 
 ### Added

@@ -93,7 +93,7 @@ const contacts = await db.select().from(contactMaster);
 
 ## Architecture
 
-### Current Architecture (v0.6)
+### Current Architecture (v0.9)
 
 Written in Rust with [tokio](https://tokio.rs/) for async I/O. Single static
 binary, no runtime dependencies.
@@ -252,7 +252,7 @@ Everything needed so the project can be properly released and maintained.
 - **GitHub Actions Release**: on tag push — cross-compile Linux/macOS binaries, GitHub Release, crates.io publish
 - **Dockerfile**: multi-stage build (rust builder → slim runtime)
 
-### v0.9 — Hardening
+### v0.9 — Hardening ✓
 Unit tests for critical code paths that only have integration coverage today.
 - **Protocol parsing tests** (`src/protocol.rs`): malformed startup messages, backend message framing edge cases, SQL escaping
 - **Config validation tests** (`src/config.rs`): missing required fields, invalid combinations, env var override precedence, malformed config

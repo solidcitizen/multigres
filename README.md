@@ -340,7 +340,7 @@ cargo test
 
 This starts a Postgres container, loads fixtures, builds pgvpd, and runs
 6 test suites: passthrough, pool, resolvers, admin API, tenant isolation,
-and SQL helpers (31 integration tests). Requires Docker and `psql`.
+and SQL helpers (33 integration tests). Requires Docker and `psql`.
 
 **Benchmarks** (requires running Postgres + pgvpd):
 
