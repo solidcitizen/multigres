@@ -553,6 +553,53 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Suite 7: Drizzle ORM
+# ═══════════════════════════════════════════════════════════════════════════
+
+if ! command -v node &>/dev/null; then
+  echo ""
+  echo "═══ Suite 7: Drizzle ORM (SKIPPED — node not found) ═══"
+else
+  echo ""
+  echo "═══ Suite 7: Drizzle ORM — Passthrough ═══"
+  start_pgvpd tests/pgvpd-test.conf
+
+  drizzle_result=0
+  (cd tests/drizzle && npm install --silent 2>/dev/null && PGVPD_SUITE=passthrough PGVPD_HOST=$PG_HOST PGVPD_PORT=$PGVPD_PORT PG_DB=$PG_DB PG_PASS=$PG_PASS npx tsx test.ts) || drizzle_result=$?
+
+  if [ $drizzle_result -eq 0 ]; then
+    pass "7.1  Drizzle passthrough — tenant_a SELECT"
+    pass "7.1b Drizzle passthrough — tenant_b SELECT"
+    pass "7.2  Drizzle passthrough — cross-tenant WHERE"
+    pass "7.3  Drizzle passthrough — INSERT scoped"
+    pass "7.3b Drizzle passthrough — INSERT wrong tenant rejected"
+    pass "7.4  Drizzle passthrough — transaction scoped"
+    pass "7.5  Drizzle passthrough — superuser bypass"
+  else
+    fail "7.x  Drizzle passthrough tests failed (exit code $drizzle_result)"
+  fi
+
+  stop_pgvpd
+
+  echo ""
+  echo "═══ Suite 7P: Drizzle ORM — Pool ═══"
+  start_pgvpd tests/pgvpd-pool-test.conf
+
+  drizzle_pool_result=0
+  (cd tests/drizzle && PGVPD_SUITE=pool PGVPD_HOST=$PG_HOST PGVPD_PORT=$PGVPD_PORT PG_DB=$PG_DB PG_PASS=$PG_PASS npx tsx test.ts) || drizzle_pool_result=$?
+
+  if [ $drizzle_pool_result -eq 0 ]; then
+    pass "7P.1 Drizzle pool — tenant isolation"
+    pass "7P.2 Drizzle pool — cross-tenant invisibility"
+    pass "7P.3 Drizzle pool — superuser bypass"
+  else
+    fail "7P.x Drizzle pool tests failed (exit code $drizzle_pool_result)"
+  fi
+
+  stop_pgvpd
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 
