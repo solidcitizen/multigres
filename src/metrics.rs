@@ -28,6 +28,12 @@ pub struct Metrics {
     pub resolver_errors: Vec<AtomicU64>,
     /// Resolver names for label rendering (indexed by resolver order).
     pub resolver_names: Vec<String>,
+
+    // ─── Tenant isolation ────────────────────────────────────────────────
+    pub tenant_rejected_deny: AtomicU64,
+    pub tenant_rejected_limit: AtomicU64,
+    pub tenant_rejected_rate: AtomicU64,
+    pub tenant_timeouts: AtomicU64,
 }
 
 impl Metrics {
@@ -49,6 +55,10 @@ impl Metrics {
             resolver_executions: (0..n).map(|_| AtomicU64::new(0)).collect(),
             resolver_errors: (0..n).map(|_| AtomicU64::new(0)).collect(),
             resolver_names,
+            tenant_rejected_deny: AtomicU64::new(0),
+            tenant_rejected_limit: AtomicU64::new(0),
+            tenant_rejected_rate: AtomicU64::new(0),
+            tenant_timeouts: AtomicU64::new(0),
         }
     }
 

@@ -16,6 +16,7 @@ use crate::metrics::Metrics;
 use crate::pool::Pool;
 use crate::resolver::{self, ResolverEngine};
 use crate::stream::ClientStream;
+use crate::tenant::TenantRegistry;
 use crate::tls;
 
 static CONN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +131,15 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // ─── Tenant isolation (if configured) ──────────────────────────────
+
+    let tenant_registry: Option<Arc<TenantRegistry>> = if config.has_tenant_limits() {
+        info!("tenant isolation enabled");
+        Some(Arc::new(TenantRegistry::new(&config, Arc::clone(&metrics))))
+    } else {
+        None
+    };
+
     // ─── Plain listener (always starts) ─────────────────────────────────
 
     let plain_addr = format!("{}:{}", config.listen_host, config.listen_port);
@@ -182,6 +192,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         let tls_pool = pool.clone();
         let tls_resolver = resolver_engine.clone();
         let tls_metrics = Arc::clone(&metrics);
+        let tls_tenant = tenant_registry.clone();
 
         tokio::spawn(async move {
             loop {
@@ -191,6 +202,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         let upstream = tls_upstream.clone();
                         let pool = tls_pool.clone();
                         let resolver = tls_resolver.clone();
+                        let tenant = tls_tenant.clone();
                         let acceptor = acceptor.clone();
                         let m = Arc::clone(&tls_metrics);
                         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -202,7 +214,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(tls_stream) => {
                                     let client = ClientStream::Tls(tls_stream);
                                     connection::handle_connection(
-                                        client, config, upstream, pool, resolver, conn_id,
+                                        client, config, upstream, pool, resolver, tenant, Arc::clone(&m), conn_id,
                                     )
                                     .await;
                                 }
@@ -229,6 +241,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         let upstream = upstream_tls.clone();
         let pool = pool.clone();
         let resolver = resolver_engine.clone();
+        let tenant = tenant_registry.clone();
         let m = Arc::clone(&metrics);
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -236,7 +249,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             Metrics::inc(&m.connections_total);
             Metrics::inc(&m.connections_active);
             let client = ClientStream::Plain(socket);
-            connection::handle_connection(client, config, upstream, pool, resolver, conn_id).await;
+            connection::handle_connection(client, config, upstream, pool, resolver, tenant, Arc::clone(&m), conn_id).await;
             Metrics::dec(&m.connections_active);
         });
     }

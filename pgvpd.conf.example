@@ -126,6 +126,30 @@
 # Seconds to wait for a connection when the pool is full.
 # pool_checkout_timeout = 5
 
+# ─── Tenant Isolation ───────────────────────────────────────
+#
+# Per-tenant controls: allow/deny lists, connection limits, rate limits.
+# These apply to the tenant payload extracted from the username.
+
+# Only allow these tenants (comma-separated). All others rejected.
+# Cannot be used with tenant_deny.
+# tenant_allow = tenant_a, tenant_b
+
+# Block these tenants (comma-separated). All others allowed.
+# Cannot be used with tenant_allow.
+# tenant_deny = blocked_tenant
+
+# Max concurrent connections per tenant.
+# tenant_max_connections = 50
+
+# Max new connections per tenant per second.
+# tenant_rate_limit = 100
+
+# Seconds of inactivity before a tenant connection is terminated.
+# In passthrough mode: connection lifetime timeout.
+# In pool mode: idle timeout (resets on each data transfer).
+# tenant_query_timeout = 300
+
 # ─── Admin API ──────────────────────────────────────────────
 #
 # HTTP port for the admin API (health, metrics, pool status).
