@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 use crate::auth;
 use crate::config::Config;
 use crate::connection::connect_upstream;
+use crate::metrics::Metrics;
 use crate::protocol::{
     build_query_message, build_startup_message, try_read_backend_message,
 };
@@ -60,20 +61,52 @@ impl PoolBucket {
     }
 }
 
+/// Snapshot of pool state for the admin /status and /metrics endpoints.
+#[derive(Debug)]
+pub struct PoolSnapshot {
+    pub buckets: Vec<PoolBucketSnapshot>,
+}
+
+/// Snapshot of a single pool bucket.
+#[derive(Debug)]
+pub struct PoolBucketSnapshot {
+    pub database: String,
+    pub role: String,
+    pub total: u32,
+    pub idle: u32,
+}
+
 /// Connection pool for upstream Postgres connections.
 pub struct Pool {
     buckets: Mutex<HashMap<PoolKey, PoolBucket>>,
     config: Arc<Config>,
     upstream_tls: Option<Arc<ClientConfig>>,
+    metrics: Arc<Metrics>,
 }
 
 impl Pool {
-    pub fn new(config: Arc<Config>, upstream_tls: Option<Arc<ClientConfig>>) -> Self {
+    pub fn new(config: Arc<Config>, upstream_tls: Option<Arc<ClientConfig>>, metrics: Arc<Metrics>) -> Self {
         Self {
             buckets: Mutex::new(HashMap::new()),
             config,
             upstream_tls,
+            metrics,
         }
+    }
+
+    /// Snapshot of current pool state (for admin API).
+    pub async fn snapshot(&self) -> PoolSnapshot {
+        let buckets = self.buckets.lock().await;
+        let mut result = Vec::with_capacity(buckets.len());
+        for (key, bucket) in buckets.iter() {
+            result.push(PoolBucketSnapshot {
+                database: key.database.clone(),
+                role: key.role.clone(),
+                total: bucket.total,
+                idle: bucket.idle.len() as u32,
+            });
+        }
+        PoolSnapshot { buckets: result }
     }
 
     /// Check out a connection from the pool. Reuses an idle connection if available,
@@ -105,6 +138,8 @@ impl Pool {
                             conn.backend_key_data = cached.clone();
                         }
                     }
+                    Metrics::inc(&self.metrics.pool_reuses);
+                    Metrics::inc(&self.metrics.pool_checkouts);
                     debug!(conn_id, database = %key.database, role = %key.role, "pool: reusing idle connection");
                     return Ok(conn);
                 }
@@ -113,6 +148,7 @@ impl Pool {
                 if bucket.total < self.config.pool_size {
                     bucket.total += 1;
                     drop(buckets); // Release lock before connecting
+                    Metrics::inc(&self.metrics.pool_creates);
                     debug!(conn_id, database = %key.database, role = %key.role, "pool: creating new connection");
                     match self.create_connection(key, conn_id).await {
                         Ok(conn) => {
@@ -126,6 +162,7 @@ impl Pool {
                                         Some(conn.backend_key_data.clone());
                                 }
                             }
+                            Metrics::inc(&self.metrics.pool_checkouts);
                             return Ok(conn);
                         }
                         Err(e) => {
@@ -142,6 +179,7 @@ impl Pool {
 
             // Pool is full — wait and retry
             if Instant::now() >= deadline {
+                Metrics::inc(&self.metrics.pool_timeouts);
                 return Err("pool checkout timeout: all connections in use".into());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -172,6 +210,7 @@ impl Pool {
         {
             Ok(true) => {
                 // Connection is clean — return to pool
+                Metrics::inc(&self.metrics.pool_checkins);
                 let mut buckets = self.buckets.lock().await;
                 if let Some(bucket) = buckets.get_mut(&key) {
                     // Re-create a minimal PooledConn for the idle queue
@@ -195,6 +234,7 @@ impl Pool {
                 }
             }
             _ => {
+                Metrics::inc(&self.metrics.pool_discards);
                 warn!(conn_id, "pool: reset failed or timed out, discarding");
                 self.decrement_total(&key).await;
             }

@@ -255,6 +255,66 @@ fi
 stop_pgvpd
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Suite 4: Admin API
+# ═══════════════════════════════════════════════════════════════════════════
+
+ADMIN_PORT=19090
+
+echo ""
+echo "═══ Suite 4: Admin API ═══"
+start_pgvpd tests/pgvpd-admin-test.conf
+
+# Wait for admin port to be ready
+retries=0
+while ! nc -z $PG_HOST $ADMIN_PORT 2>/dev/null; do
+  retries=$((retries + 1))
+  if [ $retries -gt 30 ]; then
+    echo "ERROR: admin API did not start within 3 seconds"
+    pgvpd_log
+    fail "4.0 Admin API startup"
+    stop_pgvpd
+    break
+  fi
+  sleep 0.1
+done
+
+# Test 4.1: Health endpoint
+result=$(curl -s http://$PG_HOST:$ADMIN_PORT/health)
+if echo "$result" | grep -q '"status":"ok"'; then
+  pass "4.1 /health — returns ok"
+else
+  fail "4.1 /health — unexpected result: $result"
+fi
+
+# Test 4.2: Metrics endpoint
+result=$(curl -s http://$PG_HOST:$ADMIN_PORT/metrics)
+if echo "$result" | grep -q "pgvpd_connections_total" && echo "$result" | grep -q "pgvpd_pool_checkouts_total"; then
+  pass "4.2 /metrics — contains expected metric names"
+else
+  fail "4.2 /metrics — unexpected result: $result"
+fi
+
+# Test 4.3: Status endpoint
+result=$(curl -s http://$PG_HOST:$ADMIN_PORT/status)
+if echo "$result" | grep -q '"connections_total"' && echo "$result" | grep -q '"pool"'; then
+  pass "4.3 /status — returns JSON with pool info"
+else
+  fail "4.3 /status — unexpected result: $result"
+fi
+
+# Test 4.4: Metrics update after a connection
+run_psql "app_user.tenant_a" -c "SELECT 1" > /dev/null 2>&1
+sleep 0.3
+result=$(curl -s http://$PG_HOST:$ADMIN_PORT/metrics)
+if echo "$result" | grep -q "pgvpd_connections_total [1-9]"; then
+  pass "4.4 /metrics — connections_total incremented after connection"
+else
+  fail "4.4 /metrics — connections_total not incremented: $result"
+fi
+
+stop_pgvpd
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 
