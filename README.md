@@ -17,8 +17,9 @@ context built into the connection handshake.
 ```
 Your App ──→ Pgvpd ──→ PostgreSQL (RLS enforced)
               ↕                 ↕
-        Extracts tenant    Policies filter
-        from username      by tenant context
+        Extracts identity   Policies enforce
+        Resolves context    row-level security
+        Injects SET vars    per connection
 ```
 
 ## The Problem
