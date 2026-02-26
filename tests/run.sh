@@ -399,6 +399,144 @@ fi
 stop_pgvpd
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Suite 6: SQL Helpers
+# ═══════════════════════════════════════════════════════════════════════════
+# These tests run directly against Postgres (not through pgvpd) since the
+# helper functions are pure SQL. Session variables are set manually.
+
+echo ""
+echo "═══ Suite 6: SQL Helpers ═══"
+
+# Helper to run psql directly against Postgres (not through pgvpd)
+run_pg() {
+  PGPASSWORD="$PG_PASS" psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB \
+    -t -A --no-psqlrc "$@" 2>&1 || true
+}
+
+# Test 6.1: pgvpd_context — basic read
+result=$(run_pg -c "SET app.x = 'hello'; SELECT pgvpd_context('app.x');")
+if echo "$result" | grep -q "hello"; then
+  pass "6.1 pgvpd_context — reads session variable"
+else
+  fail "6.1 pgvpd_context — expected 'hello', got: $result"
+fi
+
+# Test 6.2: pgvpd_context — fail-closed on missing
+result=$(run_pg -c "SELECT pgvpd_context('app.unset_var');")
+if [ -z "$(echo "$result" | tr -d '[:space:]')" ]; then
+  pass "6.2 pgvpd_context — NULL on missing variable (fail-closed)"
+else
+  fail "6.2 pgvpd_context — expected NULL/empty, got: $result"
+fi
+
+# Test 6.3: pgvpd_context_array — comma-separated parsing
+result=$(run_pg -c "SET app.ids = 'a,b,c'; SELECT pgvpd_context_array('app.ids');")
+if echo "$result" | grep -q "{a,b,c}"; then
+  pass "6.3 pgvpd_context_array — parses comma-separated values"
+else
+  fail "6.3 pgvpd_context_array — expected {a,b,c}, got: $result"
+fi
+
+# Test 6.4: pgvpd_context_contains — UUID match
+UUID1="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+UUID2="11111111-2222-3333-4444-555555555555"
+result=$(run_pg -c "SET app.ids = '$UUID1,$UUID2'; SELECT pgvpd_context_contains('app.ids', '$UUID1');")
+if echo "$result" | grep -q "t"; then
+  pass "6.4 pgvpd_context_contains — finds UUID in list"
+else
+  fail "6.4 pgvpd_context_contains — expected true, got: $result"
+fi
+
+# Test 6.5: pgvpd_context_contains — negative
+result=$(run_pg -c "SET app.ids = '$UUID1,$UUID2'; SELECT pgvpd_context_contains('app.ids', '$UNKNOWN_UUID');")
+if echo "$result" | grep -q "f"; then
+  pass "6.5 pgvpd_context_contains — false for missing UUID"
+else
+  fail "6.5 pgvpd_context_contains — expected false, got: $result"
+fi
+
+# Test 6.6: pgvpd_context_text_contains
+result=$(run_pg -c "SET app.roles = 'admin,viewer'; SELECT pgvpd_context_text_contains('app.roles', 'admin');")
+if echo "$result" | grep -q "t"; then
+  pass "6.6 pgvpd_context_text_contains — finds text in list"
+else
+  fail "6.6 pgvpd_context_text_contains — expected true, got: $result"
+fi
+
+# Test 6.7: pgvpd_context_uuid_array
+result=$(run_pg -c "SET app.ids = '$UUID1,$UUID2'; SELECT pgvpd_context_uuid_array('app.ids');")
+if echo "$result" | grep -q "$UUID1" && echo "$result" | grep -q "$UUID2"; then
+  pass "6.7 pgvpd_context_uuid_array — returns UUID array"
+else
+  fail "6.7 pgvpd_context_uuid_array — unexpected result: $result"
+fi
+
+# Test 6.8: pgvpd_protect_acl — builds policy and enforces access
+# Build a multi-path ACL policy on acl_cases
+run_pg -c "SELECT pgvpd_protect_acl('acl_cases', '[
+  {\"column\": \"creator_id\", \"var\": \"app.user_id\", \"type\": \"uuid\"},
+  {\"column\": \"id\", \"var\": \"app.granted_case_ids\", \"type\": \"uuid_array\"},
+  {\"column\": \"org_id\", \"var\": \"app.org_id\", \"type\": \"uuid\",
+   \"when\": \"pgvpd_context(''app.org_role'') = ''admin''\"}
+]');" > /dev/null 2>&1
+
+# Verify policy exists
+policy_check=$(run_pg -c "SELECT count(*) FROM pg_policies WHERE tablename = 'acl_cases' AND policyname = 'pgvpd_acl_acl_cases';")
+if echo "$policy_check" | grep -q "1"; then
+  pass "6.8a pgvpd_protect_acl — policy created"
+else
+  fail "6.8a pgvpd_protect_acl — policy not found: $policy_check"
+fi
+
+# Test that app_user with creator_id match sees the case
+result=$(run_pg -c "
+  SET ROLE app_user;
+  SET app.user_id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  SET app.granted_case_ids = '';
+  SET app.org_id = '';
+  SET app.org_role = '';
+  SELECT title FROM acl_cases ORDER BY title;
+  RESET ROLE;
+")
+if echo "$result" | grep -q "Case owned by test user" && ! echo "$result" | grep -q "Case in other org"; then
+  pass "6.8b pgvpd_protect_acl — creator_id path works"
+else
+  fail "6.8b pgvpd_protect_acl — unexpected result: $result"
+fi
+
+# Test that org admin sees all cases in their org
+result=$(run_pg -c "
+  SET ROLE app_user;
+  SET app.user_id = '00000000-0000-0000-0000-000000000000';
+  SET app.granted_case_ids = '';
+  SET app.org_id = '11111111-2222-3333-4444-555555555555';
+  SET app.org_role = 'admin';
+  SELECT title FROM acl_cases ORDER BY title;
+  RESET ROLE;
+")
+if echo "$result" | grep -q "Case owned by test user" && echo "$result" | grep -q "Case in same org" && ! echo "$result" | grep -q "Case in other org"; then
+  pass "6.8c pgvpd_protect_acl — org admin path works"
+else
+  fail "6.8c pgvpd_protect_acl — unexpected result: $result"
+fi
+
+# Test that uuid_array grant path works
+result=$(run_pg -c "
+  SET ROLE app_user;
+  SET app.user_id = '00000000-0000-0000-0000-000000000000';
+  SET app.granted_case_ids = 'aaaaaaaa-0000-0000-0000-000000000003';
+  SET app.org_id = '';
+  SET app.org_role = '';
+  SELECT title FROM acl_cases ORDER BY title;
+  RESET ROLE;
+")
+if echo "$result" | grep -q "Case in other org" && ! echo "$result" | grep -q "Case owned by test user"; then
+  pass "6.8d pgvpd_protect_acl — uuid_array grant path works"
+else
+  fail "6.8d pgvpd_protect_acl — unexpected result: $result"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════════════════
 

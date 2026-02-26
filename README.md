@@ -248,6 +248,52 @@ plain listener continues on `port`.
 to Postgres over TLS. Use `upstream_tls_verify = false` for self-signed
 certs, or `upstream_tls_ca` for a custom CA.
 
+## SQL Helpers
+
+Pgvpd ships convenience SQL functions (`sql/helpers.sql`) that make RLS
+policies readable and composable. Install them alongside `sql/setup.sql`:
+
+```bash
+psql -U postgres -d your_database -f sql/helpers.sql
+```
+
+### Context access
+
+Replace verbose `current_setting()` + `NULLIF()` boilerplate:
+
+```sql
+-- Before
+NULLIF(current_setting('app.user_id', true), '')
+-- After
+pgvpd_context('app.user_id')
+```
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `pgvpd_context(var)` | `TEXT` | Read session variable (NULL if unset — fail-closed) |
+| `pgvpd_context_array(var)` | `TEXT[]` | Parse comma-separated variable into text array |
+| `pgvpd_context_uuid_array(var)` | `UUID[]` | Parse comma-separated variable into UUID array |
+| `pgvpd_context_contains(var, uuid)` | `BOOLEAN` | Check if UUID is in a comma-separated variable |
+| `pgvpd_context_text_contains(var, text)` | `BOOLEAN` | Check if text value is in a comma-separated variable |
+
+### Multi-path RLS policies
+
+`pgvpd_protect_acl()` builds complex RBAC policies from a JSON config:
+
+```sql
+SELECT pgvpd_protect_acl('cases', '[
+  {"column": "creator_id", "var": "app.user_id", "type": "uuid"},
+  {"column": "id",         "var": "app.granted_case_ids", "type": "uuid_array"},
+  {"column": "org_id",     "var": "app.org_id", "type": "uuid",
+   "when": "pgvpd_context(''app.org_role'') = ''admin''"}
+]');
+```
+
+This generates a single policy where a user sees a row if they own it, have
+a direct grant, or are an org admin — all enforced by the database.
+
+Supported path types: `text`, `uuid`, `uuid_array`, `text_array`.
+
 ## Integration Tests
 
 End-to-end tests run against a real Postgres instance via Docker:
