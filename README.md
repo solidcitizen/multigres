@@ -12,7 +12,10 @@ It sits between your application and PostgreSQL, speaking the same binary
 API that every Postgres client already uses. No HTTP gateway, no REST
 layer, no SDK. Your application connects to pgvpd exactly like it
 connects to Postgres, because it *is* the Postgres API — with tenant
-context built into the connection handshake.
+context built into the connection handshake. Beyond simple identity
+extraction, pgvpd resolves additional context (org membership, roles,
+ACLs) from database state at connect time — the application provides a
+user ID and the database derives the full security context.
 
 ```
 Your App ──→ Pgvpd ──→ PostgreSQL (RLS enforced)
@@ -178,6 +181,29 @@ Steps 1–2 are the same, but Pgvpd authenticates the client itself (cleartext),
 - RLS policies match `tenant_id = current_tenant_id()` — NULL matches nothing
 - **No context = no data. Never fail-open.**
 
+## Context Resolvers
+
+Resolvers are SQL queries that run after authentication to derive additional
+session variables from database state — the Postgres equivalent of Oracle's
+Real Application Security. The application provides identity (a user UUID);
+the database resolves the full security context (org membership, team grants,
+ACLs).
+
+```toml
+# resolvers.toml
+[[resolver]]
+name = "org_membership"
+query = "SELECT org_id, role FROM org_members WHERE user_id = $1"
+params = ["app.current_user_id"]
+inject = { "app.org_id" = "org_id", "app.org_role" = "role" }
+cache_ttl = 300
+```
+
+Configure with `resolvers = resolvers.toml` in your config file. Resolvers
+execute in dependency order, chain results via bind parameters, and cache
+results with configurable TTL. Failed required resolvers terminate the
+connection (fail-closed).
+
 ### Using Existing Roles (`set_role`)
 
 Managed Postgres platforms (Supabase, Neon, etc.) ship with NOLOGIN roles
@@ -306,29 +332,6 @@ On disconnect, connections are cleaned up (`ROLLBACK` → `DISCARD ALL`) and
 returned to the idle pool. An idle reaper closes connections that have been
 unused longer than `pool_idle_timeout`. Superuser bypass connections are
 never pooled.
-
-## Context Resolvers
-
-Resolvers are SQL queries that run after authentication to derive additional
-session variables from database state — the Postgres equivalent of Oracle's
-Real Application Security. The application provides identity (a user UUID);
-the database resolves the full security context (org membership, team grants,
-ACLs).
-
-```toml
-# resolvers.toml
-[[resolver]]
-name = "org_membership"
-query = "SELECT org_id, role FROM org_members WHERE user_id = $1"
-params = ["app.current_user_id"]
-inject = { "app.org_id" = "org_id", "app.org_role" = "role" }
-cache_ttl = 300
-```
-
-Configure with `resolvers = resolvers.toml` in your config file. Resolvers
-execute in dependency order, chain results via bind parameters, and cache
-results with configurable TTL. Failed required resolvers terminate the
-connection (fail-closed).
 
 ## TLS
 
